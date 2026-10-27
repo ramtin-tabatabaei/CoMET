@@ -20,6 +20,7 @@ from aha_publish import paths
 
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -75,16 +76,26 @@ def load_condition_rules(path: str | Path | None = None) -> dict[str, Any]:
     """
 
     rules_path = Path(path) if path is not None else CONDITION_RULES_PATH
-    if not rules_path.exists():
+    try:
+        text = rules_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         raise FileNotFoundError(
             f"Verification-condition catalogue not found: {rules_path}. "
             "Set CONDITION_RULES_PATH or place generated_condition_rules.json "
             "beside this module."
-        )
+        ) from None
+
+    # Cache validation by content so even same-size edits with unchanged
+    # timestamps are detected. Decode fresh data to keep caller edits isolated.
+    return json.loads(_validated_rules_text(str(rules_path), text))
+
+
+@lru_cache(maxsize=16)
+def _validated_rules_text(path_text: str, text: str) -> str:
+    rules_path = Path(path_text)
 
     try:
-        with rules_path.open("r", encoding="utf-8") as stream:
-            rules = json.load(stream)
+        rules = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"Invalid JSON in {rules_path} at line {exc.lineno}, "
@@ -92,7 +103,7 @@ def load_condition_rules(path: str | Path | None = None) -> dict[str, Any]:
         ) from exc
 
     validate_condition_rules(rules)
-    return rules
+    return text
 
 
 def _iter_condition_rules(
@@ -385,38 +396,6 @@ def render_condition_catalogue(rules: dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines).rstrip()
-
-
-def predicate_for_placement(
-    primitive: str | None,
-    position: str,
-    rules: dict[str, Any] | None = None,
-) -> tuple[str | None, str | None]:
-    """Return ``(predicate_template, failure)`` for the catalogue rule that has a
-    placement matching ``primitive`` and ``position`` (condition_position), else
-    ``(None, None)``.
-
-    This lets deterministic post-processing reference catalogue predicates by their
-    role (e.g. "the release-postcondition predicate") instead of hard-coding a
-    predicate name, so renaming a predicate in the JSON does not silently break it.
-    """
-    if rules is None:
-        rules = load_condition_rules()
-    for _category, rule in _iter_condition_rules(rules):
-        for placement in _normalise_placements(rule):
-            if (
-                placement.get("primitive") == primitive
-                and placement.get("condition_position") == position
-            ):
-                return rule.get("predicate_template"), rule.get("failure")
-    return None, None
-
-
-def gripper_state_predicates() -> tuple[str, ...]:
-    """The generic gripper open/closed sequence-state predicates. These live here
-    (not in the external catalogue) but are still a single source of truth other
-    modules read instead of hard-coding the literal strings."""
-    return _EXTRA_SEQUENCE_PREDICATES
 
 
 # ---------------------------------------------------------------------------
@@ -891,12 +870,10 @@ def _render_template(template: str, rules: dict[str, Any]) -> str:
 
 
 def get_system_prompt(
-    task_name: str = "",
     condition_rules_path: str | Path | None = None,
 ) -> str:
     """Return Agent 1's prompt rendered entirely from the external catalogue."""
 
-    del task_name  # Kept for backward-compatible call sites.
     rules = load_condition_rules(condition_rules_path)
     return _render_template(SYSTEM_PROMPT_TEMPLATE, rules)
 
@@ -1004,14 +981,3 @@ REVIEWER_RESPONSE_SCHEMA = {
     },
     "$defs": CONDITION_RESPONSE_SCHEMA["$defs"],
 }
-
-
-# ---------------------------------------------------------------------------
-# Rendered constants
-# ---------------------------------------------------------------------------
-# The reviewer prompt is task-independent, so it is rendered once at import
-# time; the generator prompt is per-task and callers use get_system_prompt()
-# directly. Rendering here means a missing JSON file raises a clear
-# configuration error immediately.
-
-REVIEWER_SYSTEM_PROMPT = get_reviewer_system_prompt()

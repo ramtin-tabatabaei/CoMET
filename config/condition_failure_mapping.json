@@ -1,0 +1,64 @@
+{
+  "description": "How failed conditions are labelled when scoring results. Read these rules from top to bottom; the first match wins. Reference only, not runtime configuration.",
+  "source": "src/aha_publish/scoring/make_detection_samples.py: condition_failure_type and TYPE_REMAP",
+  "condition_rules": [
+    {
+      "if": "selected_object(...) or on(...) fails, even with other failures",
+      "score_as": "WrongObjectSelection"
+    },
+    {
+      "if": "Only object_in_gripper(...) fails during transport, outside the grasp stage",
+      "score_as": "Slip",
+      "meaning": "Grasp loss while carrying"
+    },
+    {
+      "if": "Only object_in_gripper(...) fails at any other stage (including grasp)",
+      "score_as": "Grasp",
+      "meaning": "No grasp / failed grasp"
+    },
+    {
+      "if": "Multiple conditions fail together and neither selected_object(...) nor on(...) failed",
+      "score_as": "Wrong Sequence"
+    },
+    {
+      "if": "Only end_effector_aligned_with(...) fails (WrongPosition)",
+      "score_as": "Wrongtransition",
+      "meaning": "The gripper is not at the pose the stage needs"
+    },
+    {
+      "if": "Only gripper_condition = Open or Closed fails (ExecutionSequenceMismatch)",
+      "score_as": "Wrong Sequence"
+    },
+    {
+      "if": "Only gripper_released(...) fails (ReleaseStateFailure)",
+      "score_as": "Wrong Sequence"
+    },
+    {
+      "if": "Only Object_found(...) fails (ObjectNotFound)",
+      "score_as": "Wrong Sequence"
+    },
+    {
+      "if": "Only gripper_oriented_for(...) fails (WrongOrientation)",
+      "score_as": "WrongOrientation"
+    },
+    {
+      "if": "One remaining condition tagged WrongPosition or ContactStateFailure fails (for example inside, next_to, or end_effector_in_contact_with)",
+      "score_as": "Wrongtransition"
+    },
+    {
+      "if": "One remaining condition tagged WrongObjectSelection or GraspStateFailure fails",
+      "score_as": "WrongObjectSelection or Grasp, respectively"
+    },
+    {
+      "if": "No violated condition is identified, or its failure tag is unmapped (for example TaskEffectFailure for open/closed)",
+      "score_as": "unknown"
+    }
+  ],
+  "hold_detector_labels": {
+    "maintains_grasp violated / slip detector fires": "Slip",
+    "no_collision violated / collision detector fires": "collision",
+    "orientation_maintained violated / orientation detector fires": "WrongOrientation",
+    "reaches_waypoint violated / transition detector fires": "Wrongtransition"
+  },
+  "note": "Grasp versus Slip is inferred from the stage, not proof of when the object was lost. These are condition-scoring rules and individual detector labels; VLM confirmation and combined-method precedence are separate."
+}

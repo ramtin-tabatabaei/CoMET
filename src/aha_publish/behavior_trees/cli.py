@@ -121,12 +121,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Generate task verification preconditions and postconditions from "
-            "a task context JSON or a Claude/OpenAI analysis JSON file."
+            "a task context JSON or an OpenAI analysis JSON file."
         )
     )
     parser.add_argument(
         "--provider",
-        choices=("claude", "openai"),
+        choices=("openai",),
         default=DEFAULT_PROVIDER,
         help="Model provider to call. Defaults to the value configured in this file.",
     )
@@ -135,7 +135,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Model to use for both Agent 1 generation and Agent 2 review. "
-            "Overrides the provider-specific model env vars."
+            "Overrides the OpenAI model environment variables."
         ),
     )
     parser.add_argument(
@@ -251,16 +251,10 @@ def apply_model_overrides(args: argparse.Namespace) -> None:
     if not generator_model and not reviewer_model:
         return
 
-    if args.provider == "claude":
-        if generator_model:
-            llm_generation.GENERATOR_CLAUDE_MODEL = generator_model
-        if reviewer_model:
-            llm_generation.CLAUDE_MODEL = reviewer_model
-    else:
-        if generator_model:
-            llm_generation.GENERATOR_OPENAI_MODEL = generator_model
-        if reviewer_model:
-            llm_generation.OPENAI_MODEL = reviewer_model
+    if generator_model:
+        llm_generation.GENERATOR_OPENAI_MODEL = generator_model
+    if reviewer_model:
+        llm_generation.OPENAI_MODEL = reviewer_model
 
 def finalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.provider = args.provider.strip().lower()
@@ -286,7 +280,6 @@ def finalize_args(args: argparse.Namespace) -> argparse.Namespace:
             sys.exit(2)
     args.task_context = args.task_contexts[0]
 
-    args.review_output_explicit = args.review_output is not None
     args.task_context = resolve_project_path(args.task_context)
     task_context = load_task_context_object(args.task_context) if args.task_context.exists() else {}
     args.task_name = task_name_from_context(args.task_context, task_context)
@@ -311,8 +304,7 @@ def run_generate_only(args: argparse.Namespace) -> None:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    provider_label = "Claude" if provider == "claude" else "OpenAI"
-    print(f"Calling {provider_label} API...")
+    print("Calling OpenAI API...")
     print(f"Task context: {args.task_context}")
     print(f"Condition catalogue: {CONDITION_RULES_PATH}")
 
@@ -321,7 +313,6 @@ def run_generate_only(args: argparse.Namespace) -> None:
         task_context,
         client,
         provider,
-        task_context_path=args.task_context,
         reviewer=getattr(args, "reviewer", None),
     )
     print_conditions(result)

@@ -1,9 +1,4 @@
-"""Task-stage extraction for the GUI bootstrap payload.
-
-The star-import of prompt_building is what propagates ``build_user_message``
-(and the cleanup names behind it) into ``llm_generation``; it is load-bearing,
-not a leftover.
-"""
+"""Task-stage extraction for the GUI bootstrap payload."""
 
 from aha_publish import paths
 

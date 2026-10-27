@@ -9,8 +9,8 @@ import unittest
 import numpy as np
 
 from aha_publish.ttm.inspect_ttm import build_llm_report_json
-from aha_publish.common.waypoint_anchors import infer_waypoint_anchors
-from aha_publish.common.waypoint_chain import (
+from aha_publish.simulation.waypoint_anchors import infer_waypoint_anchors
+from aha_publish.simulation.waypoint_chain import (
     WaypointChain, compose, pose_error, rpy_to_quat,
     spec_from_inspection_report, validate_spec,
 )
@@ -100,7 +100,7 @@ class AnchorTests(unittest.TestCase):
         self.assertEqual(chain.unresolved(), [0, 1])
 
     def test_reset_inference_never_certifies_live_hooks_or_repeats(self):
-        from aha_publish.common.rlbench_dynamic_waypoints import analyze_source, unresolved_dynamic_waypoints
+        from aha_publish.simulation.rlbench_dynamic_waypoints import analyze_source, unresolved_dynamic_waypoints
         source = '''
 class Example:
     def init_episode(self, index):
@@ -145,32 +145,24 @@ class Example:
     def test_report_writer_preserves_component_frames(self):
         import json
         data = json.loads(build_llm_report_json(
-            'synthetic', 'unused', WAYPOINTS,
+            'synthetic', WAYPOINTS,
             {'live_waypoint_world_poses': self.entries, 'reference_variation_index': 2}))
         self.assertEqual(data['reference_variation_index'], 2)
         self.assertEqual(data['waypoints'][0]['position_parent'], 'object')
         self.assertEqual(data['waypoints'][0]['orientation_parent'], 'base')
 
-    def test_standalone_detectors_use_the_same_frames(self):
-        import json
-        import tempfile
+    def test_detector_telemetry_uses_world_frame_reference_poses(self):
+        from types import SimpleNamespace
         from aha_publish.detectors.orientation import detector as orientation
         from aha_publish.detectors.transition import detector as transition
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json') as f:
-            json.dump(report(self.entries), f)
-            f.flush()
-            scene = episode(12)
-            roots = {n: scene[n] for n in self.spec['root_objects']}
-            for module, fn, key in (
-                (orientation, orientation.recalculate_ttm_waypoint_poses, 'poses'),
-                (transition, transition.recalculate_ttm_waypoint_positions, 'positions'),
-            ):
-                info = module.load_ttm_waypoint_equations('synthetic', context_path=f.name)
-                self.assertIn('object', info['parent_names'])
-                calculated = fn(info, roots)
-                self.assertEqual(calculated['unresolved'], {})
-                for i, value in calculated[key].items():
-                    np.testing.assert_allclose(value[:3], scene[f'waypoint{i}'][:3], atol=1e-8)
+        scene = episode(12)
+        for i in range(len(self.entries)):
+            pose = scene[f'waypoint{i}']
+            obs = SimpleNamespace(gripper_pose=pose)
+            o_row = orientation.obs_to_row(obs, 0, ttm_waypoint_pose=pose)
+            t_row = transition.obs_to_row(obs, 0, ttm_waypoint_pose=pose)
+            self.assertAlmostEqual(o_row['ttm_waypoint_angle'], 0.0, places=7)
+            self.assertAlmostEqual(t_row['waypoint_distance'], 0.0, places=7)
 
 
 if __name__ == '__main__':

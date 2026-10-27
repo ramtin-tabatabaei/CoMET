@@ -74,8 +74,7 @@ def compute(task, raw_dir, collision):
     maxima, episodes = load_envelopes(raw_dir, task, parameters)
     thresholds = residual_threshold_vector(maxima, floor=collision['residual_floor'],
                                            mult=collision['residual_joint_multipliers'])
-    suffix = '_v2' if collision['momentum_version'] == 2 else ''
-    relative = f'residual_stats/{task}_residual_stats{suffix}.json'
+    relative = f'residual_stats/{task}_residual_stats.json'
     filename = paths.CALIBRATION_DIR / relative
     filename.parent.mkdir(parents=True, exist_ok=True)
     filename.write_text(json.dumps(dict(parameters, task=task, episodes_completed=episodes,

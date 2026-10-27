@@ -16,7 +16,6 @@ from typing import Any
 
 REPO_ROOT = (paths.PROJECT_ROOT)
 sys.path.insert(0, str(paths.SOURCE_DIR))
-from aha_publish.common.task_categories import print_task_category
 DEFAULT_PHOTO_DIR = (paths.DESCRIPTION_DIR)
 DEFAULT_FAILGEN_CONFIG_DIR = (
     (paths.FAILGEN_ROOT / 'failgen/configs')
@@ -27,12 +26,11 @@ DEFAULT_TTM_CONTEXT_DIR = (paths.TTM_CONTEXT_DIR)
 
 
 PROVIDER = "openai"
-OPENAI_MODEL = "gpt-5.4"
-CLAUDE_MODEL = "claude-opus-4-7"
+OPENAI_MODEL = "gpt-5.6-sol"
 
 # Object-naming mode for key_scene_objects / waypoint object references.
-#   "original"    — copy the exact simulator/TTM names verbatim (default).
-#   "descriptive" — name objects for what they visibly are and do in the task.
+#   "original"    — copy the exact simulator/TTM names verbatim.
+#   "descriptive" — name objects for what they visibly are and do in the task (default).
 # Override the default with $AHA_NAMING_MODE, or per-run with the --naming flag.
 DEFAULT_NAMING_MODE = os.environ.get("AHA_NAMING_MODE", "descriptive").strip().lower()
 
@@ -100,7 +98,6 @@ class TaskInputs:
     simulator: str
     image_paths: list[PathEntry]
     scene_context_paths: list[PathEntry]
-    task_context_paths: list[PathEntry]
     output_paths: list[PathEntry]
     gripper_sequence_path: Path | None = None
 

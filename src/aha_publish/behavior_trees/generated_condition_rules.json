@@ -19,7 +19,7 @@
             "per_primitive": null,
             "occurrence": "once_per_task"
           },
-          "generation_rule": "Instantiate the predicate with every task-relevant object the robot will interact with during the task.",
+          "generation_rule": "Instantiate the predicate with all task-relevant objects the robot will interact with, using distinguishing non-spatial attributes for repeated object types.",
           "prohibitions": []
         },
         {
@@ -36,7 +36,7 @@
             "per_primitive": null,
             "occurrence": "once_per_new_object_interaction"
           },
-          "generation_rule": "Instantiate <object> as the task-relevant object to be grasped at each new object interaction.",
+          "generation_rule": "Instantiate the predicate for the intended object immediately before its grasp, using a distinguishing non-spatial attribute when needed.",
           "prohibitions": []
         }
       ]
@@ -60,7 +60,7 @@
             "per_primitive": null,
             "occurrence": "once_per_new_object_interaction"
           },
-          "generation_rule": "Instantiate <object> as each task object the robot is about to newly interact with by grasping or by non-grasping contact.",
+          "generation_rule": "Instantiate the predicate for each object the robot newly grasps, pushes, or presses.",
           "prohibitions": []
         },
         {
@@ -77,7 +77,7 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate <object> as the object to be grasped at that waypoint.",
+          "generation_rule": "Instantiate <object> with each object the robot grasps.",
           "prohibitions": []
         }
       ]
@@ -133,8 +133,10 @@
             ],
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate <object> as the manipulated object that is grasped, carried, placed, and then released in the task.",
-          "prohibitions": []
+          "generation_rule": "Instantiate the predicate for each object the robot grasps, using its unique task object name and verifying that the object is actually held.",
+          "prohibitions": [
+            "Do not check the predicate as a precondition on the grasp waypoint."
+          ]
         },
         {
           "source_condition_id": "G-02",
@@ -150,7 +152,7 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate <object> as the task object the robot relinquishes at the release waypoint.",
+          "generation_rule": "Instantiate the predicate for the object actually relinquished at each release waypoint.",
           "prohibitions": []
         },
         {
@@ -170,9 +172,9 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate <object> as each task object the end effector contacts through non-grasping manipulation.",
+          "generation_rule": "Instantiate the predicate for each object the end effector contacts during a push waypoint.",
           "prohibitions": [
-            "Do not check precondition on the first push waypoint of a contact run."
+            "Do not apply the precondition check to the first push waypoint of each contact-based manipulation run."
           ]
         }
       ]
@@ -195,7 +197,7 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate for each released object and its task-named support target when the task intends placement on that target.",
+          "generation_rule": "Instantiate on(object, target) for every release explicitly intended to leave the relinquished object supported on the named target.",
           "prohibitions": []
         },
         {
@@ -212,7 +214,7 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate for each task-specified object-target pair where the object is intended to be placed inside the named container target.",
+          "generation_rule": "Instantiate inside(object, target) for each released object that the task explicitly requires to be placed inside a named target.",
           "prohibitions": []
         },
         {
@@ -229,7 +231,7 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate for each released object and the named target it is intended to be placed directly next to.",
+          "generation_rule": "Instantiate next_to(object, target) for each released object explicitly intended to be placed next to the named target.",
           "prohibitions": []
         },
         {
@@ -246,10 +248,8 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate <object> as the task-specified door, lid, or panel that the robot opens by non-grasping contact.",
-          "prohibitions": [
-            "Do not check this predicate as a precondition on the final push waypoint that first produces the opening effect."
-          ]
+          "generation_rule": "Instantiate open(<object>) for each task-specified door the robot opens through non-grasping contact.",
+          "prohibitions": []
         },
         {
           "source_condition_id": "Go-05",
@@ -265,10 +265,8 @@
             "per_primitive": null,
             "occurrence": "every_matching_waypoint"
           },
-          "generation_rule": "Instantiate <object> with the acted-on door panel that the task specifies must be closed and verify it is fully seated against its frame.",
-          "prohibitions": [
-            "Do not check this predicate as a precondition on the final push waypoint that produces the closing effect."
-          ]
+          "generation_rule": "Instantiate the predicate for each task-specified door that the robot pushes closed.",
+          "prohibitions": []
         }
       ]
     }

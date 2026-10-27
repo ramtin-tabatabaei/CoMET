@@ -34,12 +34,12 @@ sound for every method.
 
 FRAME delay is control steps, read from the sidecar.  It is finer, but it is
 only a real measurement for the DETECTOR-driven methods: vlm_events.csv carries
-a detection_frame on detector rows and never on condition rows, so A1's and B2's
+a detection_frame on detector rows and never on condition rows, so A1's
 alarm frames are filled in from the END of the waypoint's step span.  Their frame
 delays are therefore waypoint boundaries with decimals attached -- they do not
 say when inside the waypoint the VLM noticed, because nothing recorded that.
 A4 mixes the two: it takes whichever channel fired first.  So compare frame
-delays among A2/A3 freely, and never read a frame gap between A1/B2 and a
+delays among A2/A3 freely, and never read a frame gap between A1 and a
 detector method as a real latency difference -- use the waypoint column there.
 
 Either way the delay is over the detected episodes only -- a miss has no delay --
@@ -63,9 +63,6 @@ Usage
     python aha_scripts/report_detection_delay.py --table
 """
 
-from __future__ import annotations
-
-from aha_publish import paths
 
 import argparse
 import csv
@@ -92,7 +89,7 @@ def episode_detected(episode: dict, method: str, unc: bool) -> bool | None:
 # vlm_events.csv has a detection_frame on detector rows only, so these methods'
 # alarm frames are filled in from the end of the waypoint's step span rather than
 # measured.  Their frame delays quantize to waypoint boundaries.
-FRAME_IS_BOUNDARY = ("B2", "A1")
+FRAME_IS_BOUNDARY = ("A1",)
 
 
 def first_crediting_alarm(episode: dict, method: str,
@@ -214,7 +211,7 @@ def main():
                         help="unit for the delay: 'waypoint' (default) counts "
                              "checkpoints and is sound for every method; "
                              "'frame' counts control steps but is only measured "
-                             "for the detector-driven methods (A1/B2 frames are "
+                             "for the detector-driven methods (A1 frames are "
                              "waypoint-boundary fallbacks); 'both' shows each")
     parser.add_argument("--table", action="store_true",
                         help="print a compact table instead of sentences")

@@ -74,19 +74,6 @@ def available_tasks():
     )
 
 
-def prompt_yes_no(question, default=True):
-    suffix = "[Y/n]" if default else "[y/N]"
-    while True:
-        answer = input(f"{question} {suffix}: ").strip().lower()
-        if not answer:
-            return default
-        if answer in ("y", "yes"):
-            return True
-        if answer in ("n", "no"):
-            return False
-        print("Please answer y or n.")
-
-
 def is_gripper_frame(label):
     """True for the gripper open/close screenshots (e.g. label 'gripper_open_front')."""
     return label.startswith("gripper_open") or label.startswith("gripper_close")
@@ -112,10 +99,10 @@ def prompt_task_choice(tasks):
         print(f"Please enter a number between 0 and {len(tasks)}.")
 
 
-def combine_folder(folder_name, include_gripper=True):
+def combine_folder(folder_name):
     """Combine one task's per-waypoint camera screenshots into a single grid image.
 
-    When include_gripper is False, the gripper open/close action rows are left out.
+    Dedicated gripper open/close action frames are excluded, including old captures.
     """
     FOLDER = os.path.join(BASE_FOLDER, folder_name)
     if not os.path.isdir(FOLDER):
@@ -131,7 +118,7 @@ def combine_folder(folder_name, include_gripper=True):
                 base_name, wp, label = match.groups()
                 if camera_of(label) not in CAMERA_ORDER:
                     continue
-                if not include_gripper and is_gripper_frame(label):
+                if is_gripper_frame(label):
                     continue
                 full_path = os.path.join(FOLDER, file)
                 groups[(base_name, wp)].append((label, full_path))
@@ -199,15 +186,13 @@ def main():
         return
 
     if sys.stdin.isatty():
-        include_gripper = prompt_yes_no("Include gripper open/close frames?", default=True)
         choice = prompt_task_choice(tasks)
         selected = tasks if choice is None else [choice]
     else:
-        include_gripper = True
         selected = tasks
 
     for folder_name in selected:
-        combine_folder(folder_name, include_gripper)
+        combine_folder(folder_name)
 
     print("\nAll done!")
 

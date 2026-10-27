@@ -1,22 +1,9 @@
-"""Live runtime detectors embedded in the bt_gui BT run.
+'Coordinate the four BT-requested detectors, calibrated references, telemetry capture, and slip/collision VLM confirmation.'
 
-Each detector lives in its OWN module here (collision.py, freezing.py, slip.py,
-orientation.py, transition.py) as a faithful copy of that detector's standalone
-``interactive.py`` real-time detection + live plot + VLM-confirm-and-pause,
-adapted to be fed observations by the BT runner instead of driving its own demo.
-
-This package's job is only orchestration: build the detectors the BT's hold
-conditions request, feed each one per simulation step (gated per waypoint by the
-BT), and summarize. All detection/plot/VLM behaviour lives in the per-detector
-modules.
-"""
-
-from aha_publish import paths
 
 # name -> submodule providing a LiveDetector class
 _DETECTOR_MODULES = {
     "collision": "collision",
-    "freezing": "freezing",
     "slip": "slip",
     "orientation": "orientation",
     "transition": "transition",
@@ -25,7 +12,7 @@ _DETECTOR_MODULES = {
 import os as _os
 
 _ALL_LIVE_DETECTORS = (
-    "collision", "freezing", "slip", "orientation", "transition",
+    "collision", "slip", "orientation", "transition",
 )
 # Optional allow-list to run only specific detectors, e.g.
 # AHA_LIVE_DETECTORS=orientation (comma-separated). Empty -> all.
@@ -39,15 +26,6 @@ else:
 
 _DETECTOR_NAMES = set(_DETECTOR_MODULES)
 
-# Detectors whose firing is taken as final — no VLM confirmation step. Only the
-# GEOMETRIC detectors (orientation, transition) skip confirmation by default:
-# they are pure pose signals where a VLM look-and-confirm adds latency and can
-# falsely retract a real detection. Slip and collision ARE VLM-confirmed by
-# default — their physical signal (grip force / torque) is noisier, so a visual
-# check (taken a few frames after the trigger; see AHA_VLM_CONFIRM_DELAY_FRAMES)
-# guards against false positives. Override with
-# AHA_VLM_CONFIRM_DETECTORS=orientation,transition,slip,collision,... to choose
-# exactly which detectors are confirmed (empty value -> none confirmed).
 _skip_env = _os.getenv("AHA_VLM_CONFIRM_DETECTORS")
 if _skip_env is None:
     NO_VLM_CONFIRM_DETECTORS = {"orientation", "transition"}
@@ -58,7 +36,6 @@ else:
 # Fallback mapping from a hold-condition predicate to its detector.
 _HOLD_PREDICATE_TO_DETECTOR = {
     "no_collision": "collision",
-    "not_frozen": "freezing",
     "maintains_grasp": "slip",
     "orientation_maintained": "orientation",
     "reaches_waypoint": "transition",
@@ -312,11 +289,7 @@ def stage_context_map_for_stages(stages, n_waypoints, stage_lookup=None):
 class LiveDetectorMonitor:
     """Feeds every requested detector per step; each detector self-reports."""
 
-    def __init__(self, task_name, *, waypoint_pose_fn=None, original_pose_fn=None,
-                 enabled_map=None, target_object_map=None, stage_context_map=None,
-                 env_wrapper=None, vlm_enabled=True, vlm_model=None,
-                 vlm_trace=False, show_plots=True, n_waypoints=0,
-                 failure_waypoint=None):
+    def __init__(self, task_name, *, waypoint_pose_fn=None, original_pose_fn=None, enabled_map=None, target_object_map=None, stage_context_map=None, env_wrapper=None, vlm_enabled=True, vlm_model=None, n_waypoints=0, failure_waypoint=None):
         self.task_name = task_name
         self.waypoint_pose_fn = waypoint_pose_fn
         self.original_pose_fn = original_pose_fn
@@ -359,9 +332,6 @@ class LiveDetectorMonitor:
             requested = set()
             for names in enabled_map.values():
                 requested |= set(names)
-            if not requested:  # older BT with no hold conditions -> run all
-                requested = None
-                self.enabled_map = None
 
         for name in DEFAULT_LIVE_DETECTORS:
             if requested is not None and name not in requested:
@@ -379,9 +349,13 @@ class LiveDetectorMonitor:
             det_vlm = vlm_enabled and name not in NO_VLM_CONFIRM_DETECTORS
             try:
                 det = cls(
-                    task_name, env_wrapper=env_wrapper, vlm_enabled=det_vlm,
-                    vlm_model=vlm_model, vlm_trace=vlm_trace, show_plot=show_plots,
-                    n_waypoints=n_waypoints, failure_waypoint=failure_waypoint)
+                    task_name,
+                    env_wrapper=env_wrapper,
+                    vlm_enabled=det_vlm,
+                    vlm_model=vlm_model,
+                    n_waypoints=n_waypoints,
+                    failure_waypoint=failure_waypoint,
+                )
             except Exception as exc:
                 self.skipped.append((name, f"init failed: {exc}"))
                 continue
@@ -435,14 +409,12 @@ class LiveDetectorMonitor:
 
     def begin_waypoint(self, waypoint_index):
         """Re-arm geometric checks for each execution, including repetitions."""
-        ref_index = self._original_waypoint_at(waypoint_index)
         for name in ('orientation', 'transition'):
             self._pose_measurements[(name, waypoint_index)] = 0
             det = self.detectors.get(name)
             if det is not None:
                 det._cur_wp = None
                 det._fired_this_execution.clear()
-                det._vlm_rejected.discard(ref_index)
 
     def unevaluated_at(self, waypoint_index):
         return {name for name in self.active_at(waypoint_index)
@@ -469,18 +441,6 @@ class LiveDetectorMonitor:
                     break
         return best
 
-    def flush_pending_vlm(self):
-        """Resolve any detector's deferred VLM confirmation now. Called right
-        before the BT consumes fired_at(), so a delayed verifier's verdict (and
-        any retraction) is applied before the hold check reads fired_waypoints."""
-        for det in self.detectors.values():
-            fn = getattr(det, "flush_pending_vlm", None)
-            if fn is None:
-                continue
-            try:
-                fn()
-            except Exception:
-                pass
 
     def active_names(self):
         return list(self.detectors)
@@ -541,16 +501,6 @@ class LiveDetectorMonitor:
             except Exception:
                 pass
         enabled = self._enabled_at(waypoint_index)
-        # wrong_sequence_v2 scatters the waypoints across slots, so the waypoint
-        # physically sitting in slot `waypoint_index` is the one that was
-        # originally at perm[waypoint_index]. The geometric detectors judge a
-        # motion against a per-waypoint reference pose AND per-waypoint clean
-        # baselines, both keyed by the ORIGINAL index, so they have to follow the
-        # shuffle -- otherwise every slot is scored against another waypoint's
-        # target and the run fires at every waypoint.
-        #
-        # BT stage gating (`enabled`, above) deliberately stays on the slot: that
-        # is the tree's own ordering, which the shuffle does not touch.
         ref_index = self._original_waypoint_at(waypoint_index)
         waypoint_pose = None
         if self.waypoint_pose_fn is not None:
@@ -571,17 +521,10 @@ class LiveDetectorMonitor:
                     ref_pose = self.original_pose_fn(ref_index)
                 except Exception:
                     ref_pose = None
-        freezing_already_reported = (
-            "freezing" in self.detectors
-            and waypoint_index in self.detectors["freezing"].fired_waypoints
-        )
-        # Per-detector report gate (BT gating + freezing pre-emption + gripper
-        # phase). Computed once so the capture stream and the live feed agree.
+        # Apply the BT and gripper-phase report gates to capture and live feeds.
         reports = {}
         for name in self.detectors:
             rep = enabled is None or name in enabled
-            if freezing_already_reported and name != "freezing":
-                rep = False
             if phase == "gripper" and name == "collision":
                 rep = False
             reports[name] = rep
@@ -621,9 +564,6 @@ class LiveDetectorMonitor:
                     print(f"  [detector:{name}] disabled mid-run — {exc}")
 
     def print_summary(self):
-        # Resolve any still-deferred VLM confirmation so the summary reflects the
-        # final verdict (normally every waypoint's hold check already flushed).
-        self.flush_pending_vlm()
         print("\n" + "=" * 70)
         print("  Live detector summary")
         print("=" * 70)

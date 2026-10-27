@@ -34,28 +34,26 @@ def same_path(saved_path: str | None, current_path: Path) -> bool:
         return str(saved_path) == str(current_path)
 
 def load_saved_conditions(args: argparse.Namespace) -> dict | None:
-    for path in review_output_candidates(args):
-        if not path.exists():
-            continue
+    path = args.review_output
+    if not path.exists():
+        return None
 
-        try:
-            saved_data = json.loads(path.read_text())
-        except json.JSONDecodeError:
-            continue
+    try:
+        saved_data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
 
-        saved_task_path = (
-            saved_data.get("waypoint_json_path")
-            or saved_data.get("task_context_path")
-        )
-        if saved_task_path and not same_path(saved_task_path, args.task_context):
-            continue
+    saved_task_path = (
+        saved_data.get("waypoint_json_path")
+        or saved_data.get("task_context_path")
+    )
+    if saved_task_path and not same_path(saved_task_path, args.task_context):
+        return None
 
-        saved_conditions = saved_review_to_conditions(saved_data)
-        if saved_conditions:
-            saved_conditions["source_path"] = str(path)
-        return saved_conditions
-
-    return None
+    saved_conditions = saved_review_to_conditions(saved_data)
+    if saved_conditions:
+        saved_conditions["source_path"] = str(path)
+    return saved_conditions
 
 def save_review_file(args: argparse.Namespace, payload: dict) -> Path:
     args.review_output.parent.mkdir(parents=True, exist_ok=True)
@@ -163,16 +161,7 @@ def make_gui_handler(args: argparse.Namespace):
                         client,
                         provider,
                         payload.get("guidance", ""),
-                        task_context_path=args.task_context,
                         reviewer=getattr(args, "reviewer", None),
-                        # The GUI shows Agent 2's reviewed BT verbatim — no cleanup
-                        # pipeline and no ground-truth stamping. The cleanup passes
-                        # were rewriting Agent 2's fixes (e.g. re-imposing transport
-                        # semantics on a stage Agent 2 reclassified as push), so the
-                        # browser no longer matched the reviewed output printed in
-                        # the terminal. Only hold conditions are still attached, as
-                        # those are runtime detectors rather than generated content.
-                        postprocess=False,
                     )
                     response = {"result": result}
                     # --generate means "make a fresh BT for this task", so the
@@ -211,8 +200,6 @@ def run_gui(args: argparse.Namespace) -> None:
     print(f"BT Condition Studio is running at {url}")
     print(f"Provider: {args.provider}")
     print(f"Task context: {args.task_context}")
-    if getattr(args, "task_name", None):
-        print_task_category(args.task_name)
     print(f"Condition catalogue: {CONDITION_RULES_PATH}")
     print(f"Review output: {args.review_output}")
     if getattr(args, "generate", False):

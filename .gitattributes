@@ -1,0 +1,2 @@
+# Preserve upstream whitespace verbatim inside dependency patches.
+patches/*.patch -whitespace

@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from aha_publish.common.waypoint_chain import WaypointChain, compose, rpy_to_quat, spec_from_inspection_report
-from aha_publish.common.waypoint_reference_rules import ReferenceRuleEvaluator, export_hook_reference_rules
+from aha_publish.simulation.waypoint_chain import WaypointChain, compose, rpy_to_quat, spec_from_inspection_report
+from aha_publish.simulation.waypoint_reference_rules import ReferenceRuleEvaluator, export_hook_reference_rules
 
 
 class NameOnlyObject:

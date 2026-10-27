@@ -1,0 +1,119 @@
+{
+  "taxonomy_name": "Failure-linked waypoint verification conditions",
+  "scope": "Symbolic conditions checked at waypoint boundaries during robot task execution.",
+  "categories": [
+    {
+      "category": "Object State",
+      "category_explanation": "Conditions confirming the perceptual availability and correct selection of task-relevant objects.",
+      "rules": [
+        {
+          "source_condition_id": "PG-01",
+          "failure": "ObjectNotFound",
+          "predicate_template": "Object_found(<object_1>, <object_2>, ...) == True",
+          "occurrence": "once_per_task",
+          "stage_rule": "Check once at the start of the first move, before execution begins."
+        },
+        {
+          "source_condition_id": "PG-02",
+          "failure": "WrongObjectSelection",
+          "predicate_template": "selected_object(<object>) == True",
+          "occurrence": "once_per_new_object_interaction",
+          "stage_rule": "Check before the robot grasp one object"
+        }
+      ]
+    },
+    {
+      "category": "Spatial Relationship",
+      "category_explanation": "Conditions confirming that the end effector has the required position and orientation before interaction.",
+      "rules": [
+        {
+          "source_condition_id": "SR-01",
+          "failure": "WrongPosition",
+          "predicate_template": "end_effector_aligned_with(<object>) == True",
+          "occurrence": "once_per_new_object_interaction",
+          "stage_rule": "Check before the robot to grasp the object or push ot pres it."
+        },
+        {
+          "source_condition_id": "SR-02",
+          "failure": "WrongOrientation",
+          "predicate_template": "gripper_oriented_for(<object>) == True",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "Check before the robot to grasp the object."
+        }
+      ]
+    },
+    {
+      "category": "Grasp",
+      "category_explanation": "Conditions confirming the grasp, release, and contact states required by the action sequence.",
+      "rules": [
+        {
+          "source_condition_id": "G-01",
+          "failure": "GraspStateFailure",
+          "predicate_template": "object_in_gripper(<object>) == True",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "check after the time the robot has the object in its gripper till it release it."
+        },
+        {
+          "source_condition_id": "G-02",
+          "failure": "ReleaseStateFailure",
+          "predicate_template": "gripper_released(<object>) == True",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "Check after the time the robot released the object."
+        },
+        {
+          "source_condition_id": "G-03",
+          "failure": "ContactStateFailure",
+          "predicate_template": "end_effector_in_contact_with(<object>) == True",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "check it during the time the gripper is in contact with one object."
+        }
+      ]
+    },
+    {
+      "category": "Goal",
+      "category_explanation": "Conditions confirming the task-specified qualitative relation between a released object and a named physical target.",
+      "rules": [
+        {
+          "source_condition_id": "Go-01",
+          "failure": "WrongPosition",
+          "predicate_template": "on(<object>, <target>) == True",
+          "predicate_meaning": "<object> rests on an upward-facing supporting surface of <target> (a table, shelf, tray, plate or lid), in stable contact and held up against gravity by that surface, and is no longer held by the gripper. It asserts support only, not containment.",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "Check at the end of every release intended to place an object on a named target."
+        },
+        {
+          "source_condition_id": "Go-02",
+          "failure": "WrongPosition",
+          "predicate_template": "inside(<object>, <target>) == True",
+          "predicate_meaning": "<object> has gone into the interior of <target> -- a container such as a box, drawer, basket, bin, bowl, cup or fridge -- and is not merely on its outer surface or rim.",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "Check at the end of every release intended to place an object inside a named target."
+        },
+        {
+          "source_condition_id": "Go-03",
+          "failure": "WrongPosition",
+          "predicate_template": "next_to(<object>, <target>) == True",
+          "predicate_meaning": "<object> and <target> rest on the same supporting surface, adjacent to one another with no third object between them and separated by a gap small relative to the objects themselves. It asserts neither support of one by the other nor containment.",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "Check at the end of every release intended to place an object directly next to a named target."
+        },
+        {
+          "source_condition_id": "Go-04",
+          "failure": "TaskEffectFailure",
+          "predicate_template": "open(<object>) == True",
+          "predicate_meaning": "<object> is a door: a hinged or sliding panel that covers an opening in a fixed body (a door, a fridge/microwave/grill door, a box or toilet lid) and whose only two meaningful states are open and closed. The predicate holds when that panel is displaced from its frame far enough to leave the opening it covers accessible.",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "Check at the end of the final pushing that produces the opening effect of object."
+        },
+        {
+          "source_condition_id": "Go-05",
+          "failure": "TaskEffectFailure",
+          "predicate_template": "closed(<object>) == True",
+          "predicate_meaning": "<object> is a door: a hinged or sliding panel that covers an opening in a fixed body (a door, a fridge/microwave/grill door, a box or toilet lid) and whose only two meaningful states are open and closed. The predicate holds when that panel is fully seated against its frame, leaving the opening it covers not accessible.",
+          "occurrence": "every_matching_waypoint",
+          "stage_rule": "Check at the end of the final pushing that produces the closing effect of object."
+        }
+      ]
+    }
+  ]
+}
