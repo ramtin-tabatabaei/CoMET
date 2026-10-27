@@ -10,6 +10,30 @@ screenshots, gripper-sequence JSON, descriptions, behavior trees, clean
 calibration data, thresholds, execution logs, and scores. The starting inputs
 are source models (`.ttm`), task YAMLs, and the simulator/backend installations.
 
+## macOS compatibility
+
+The full simulator workflow currently requires Linux. Opening CoppeliaSim on a
+Mac does not establish compatibility with CoMET: the pinned PyRep dependency
+requires CoppeliaSim 4.1 and explicitly supports simulator communication only on
+Linux ([PyRep installation notes](https://github.com/stepjam/PyRep#install)).
+The bundled installer and dependency check also expect Linux simulator libraries
+such as `libcoppeliaSim.so`. Native macOS simulation would require a separate
+port and validation, including matching the simulator, Python bindings, and CPU
+architecture. A newer macOS CoppeliaSim installation is not a replacement for
+the pinned simulator in these instructions.
+
+Offline scoring is separate from simulation and can be tried on a Mac using a
+sample CSV exported from an Ubuntu run. With a Python 3.10 environment active,
+run the following from the repository root:
+
+```bash
+python -m pip install -r requirements.txt
+python 05_scoring/main.py --samples /path/to/detection_samples.csv --out-dir outputs/scores
+```
+
+This offline route has not been tested on macOS. Use Ubuntu for the complete
+capture, calibration, and execution workflow below.
+
 ## Workflow
 
 | Step | Main entry point | What it produces |
@@ -28,17 +52,64 @@ Step 1 **inspects existing TTM models**; it does not create or modify `.ttm` mod
 
 ## Setup
 
+These instructions target **Ubuntu on an Intel/AMD 64-bit laptop (`x86_64`)**,
+using Bash. The development host runs Ubuntu 22.04 with the Ubuntu 20.04 build
+of CoppeliaSim 4.1. Native Windows, macOS, ARM, and WSL simulator installations
+have not been validated by this project.
+
+You need a working OpenGL renderer and an X display for simulator image capture,
+including when the simulator runs without its own window. Install your laptop's
+graphics driver before the simulator check. Description generation, BT generation,
+and runtime VLM checks also need an OpenAI API key with access to the selected model.
+
+### Prepare a new Ubuntu laptop
+
+Install the host tools and graphics libraries:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl ca-certificates xz-utils build-essential \
+  libgl1 libegl1 libglu1-mesa libgl1-mesa-dri libxrender1 libxi6 libxrandr2 \
+  libxkbcommon-x11-0 libxcb-xinerama0 libfontconfig1 mesa-utils xvfb xauth
+```
+
+Check whether Conda is available:
+
+```bash
+conda --version
+```
+
+If that reports `conda: command not found`, install
+[Miniforge](https://github.com/conda-forge/miniforge#unix-like-platforms-macos--linux)
+for Linux `x86_64`. The following installs it into a new `~/miniforge3` folder:
+
+```bash
+curl -fL --retry 3 \
+  https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
+  -o /tmp/Miniforge3-Linux-x86_64.sh
+bash /tmp/Miniforge3-Linux-x86_64.sh -b -p "$HOME/miniforge3"
+source "$HOME/miniforge3/etc/profile.d/conda.sh"
+conda --version
+```
+
+In a new terminal, source that `conda.sh` again before using the project scripts,
+or run `conda init bash` once and reopen your terminal. An existing working Conda
+installation can be used instead. The project script creates its own Python 3.10
+environment; you do not need to install a separate system Python version.
+
+### Clone CoMET
+
 Clone the project into a `CoMET` directory and enter it:
 
 ```bash
-git clone https://github.com/ramtin-tabatabaei/aha_public.git CoMET
+git clone https://github.com/ramtin-tabatabaei/CoMET.git CoMET
 cd CoMET
 ```
 
-Use Linux with Conda, a C/C++ compiler, graphics drivers, and an OpenGL/X
-display. Python 3.10 is installed by the environment script. CoppeliaSim 4.1,
-PyRep, RLBench task models, and FailGen are separate dependencies; a Git clone
-does not include `external/`. Obtain them below before creating the environment.
+CoppeliaSim 4.1, PyRep, RLBench task models, and FailGen are separate dependencies;
+a Git clone does not include `external/`. Obtain them below before creating the
+environment. You do not need to copy an existing `outputs/` folder or other
+generated experiment files from another machine.
 
 ### Obtain simulator dependencies
 
@@ -82,10 +153,8 @@ tar -xJf external/CoppeliaSim.tar.xz --strip-components=1 -C external/CoppeliaSi
 ln -sf libcoppeliaSim.so external/CoppeliaSim/libcoppeliaSim.so.1
 ```
 
-On Ubuntu, typical host packages include `build-essential`, `libgl1`, `libegl1`,
-`libxrender1`, `libxi6`, `libxrandr2`, `libxkbcommon-x11-0`,
-`libxcb-xinerama0`, and `libfontconfig1`. Headless runs also need `xvfb` and
-`xauth`, or an existing X server with OpenGL support. See the
+The host-package command above includes Xvfb and X authentication support.
+Headless runs still need an X server with OpenGL support. See the
 [PyRep headless setup](https://github.com/stepjam/PyRep#running-headless)
 for graphics-server configuration.
 
@@ -97,8 +166,17 @@ Create a fresh Python 3.10 Conda environment **inside this folder**:
 bash scripts/create_local_env.sh
 source scripts/activate_local.sh
 python scripts/check_local_env.py
+```
+
+The dependency check should finish with `Local environment checks passed.`
+Then test simulator startup without calling an API:
+
+```bash
 python 01_ttm_context/main.py --task basketball_in_hoop
 ```
+
+Successful inspection creates
+`outputs/ttm_context/basketball_in_hoop.llm_context.json`.
 
 The installer uses `.conda/aha-publish`, installs the Python dependencies, and
 builds PyRep against the local simulator. For each new terminal, run
@@ -141,9 +219,12 @@ location, set `AHA_OUTPUT_ROOT` **consistently for all stages**, after sourcing
 
 ```bash
 export AHA_OUTPUT_ROOT=/absolute/path/to/comet-results
-# Optional separate calibration storage:
-export AHA_CALIBRATION_ROOT=/absolute/path/to/calibration
+export AHA_CALIBRATION_ROOT="$AHA_OUTPUT_ROOT/calibration"
+# To store calibration separately, override AHA_CALIBRATION_ROOT with that path.
 ```
+
+Set both variables when changing the output location after activation, because
+the activation script exports an explicit calibration path as well.
 
 The defaults and paths are defined once in `src/aha_publish/paths.py`.
 
@@ -152,6 +233,52 @@ artifact locations. Old `PYTHONPATH`, per-detector calibration paths, and
 waypoint-chain paths inherited from another checkout are not used. The explicit
 top-level `AHA_OUTPUT_ROOT` and `AHA_CALIBRATION_ROOT` settings still select where
 CoMET stores its generated files.
+
+### First complete trial on a new laptop
+
+After dependency checks and simulator inspection pass, activate the environment
+and set `OPENAI_API_KEY` in the same terminal. Start with one task, one clean
+calibration episode, and a clean evaluation:
+
+```bash
+python run_pipeline.py --task basketball_in_hoop --episodes 1 --failures none --dry-run
+python run_pipeline.py --task basketball_in_hoop --episodes 1 --failures none
+```
+
+This trial includes API calls for descriptions, BTs, and runtime verification.
+It checks installation and execution; one clean episode is not a failure-detection
+benchmark. Use the normal calibration count and injected failures for evaluation.
+
+If there is no usable desktop X display, wrap each simulator command, including
+the pipeline, in Xvfb:
+
+```bash
+xvfb-run -a -s "-screen 0 1400x900x24" \
+  python run_pipeline.py --task basketball_in_hoop --episodes 1 --failures none
+```
+
+With the default output paths, a completed trial produces:
+
+| Result | File |
+| --- | --- |
+| Task inspection | `outputs/ttm_context/basketball_in_hoop.llm_context.json` |
+| Description | `outputs/descriptions/basketball_in_hoop_ALL_WAYPOINTS_COMBINED.openai.multimodal_analysis.json` |
+| Behavior tree | `outputs/behavior_trees/basketball_in_hoop.bt_conditions.json` |
+| Calibration manifest | `outputs/calibration/manifests/basketball_in_hoop.json` |
+| Clean execution log | `outputs/runs/basketball_in_hoop/clean/run.log` |
+| Checkpoint samples | `outputs/scores/detection_samples.csv` |
+| Scores | `outputs/scores/metrics_overall.csv` and `outputs/scores/metrics_per_failure.csv` |
+
+### Setup troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `conda: command not found` | Source the `conda.sh` from your Conda installation before running setup or activation. |
+| `Missing local dependency` | Complete the simulator/source downloads and patches before running `scripts/create_local_env.sh`. |
+| `No module named aha_publish` or `pyrep` | Run from the repository root after `source scripts/activate_local.sh`; rerun the environment installer if PyRep did not build. |
+| Qt `xcb` errors, missing shared libraries, or display errors | Check the host packages, source the activation script, and try the Xvfb simulator check above. Use `glxinfo -B` on the same display to inspect the OpenGL renderer. |
+| Missing descriptions, BTs, or calibration manifests | Run the preceding stages for the same task with the same output-root settings. |
+| API authentication or model-access error | Set `OPENAI_API_KEY` in the current terminal and check that the API account can use the selected model. |
 
 ## Generate everything with one command
 
@@ -214,7 +341,7 @@ python 04_running/main.py --task basketball_in_hoop
 # Include the supported injected failure cases and a clean baseline.
 python 04_running/main.py --task basketball_in_hoop --failures all
 
-# 5. Build checkpoint samples and score all available AHA methods.
+# 5. Build checkpoint samples and score all available methods.
 python 05_scoring/main.py
 ```
 
@@ -517,6 +644,9 @@ They also check fresh gripper capture before generation and run a copied
 project worker with reads from the source checkout explicitly blocked.
 Simulator capture and provider calls are mocked in these isolation tests.
 Calibration was also checked against one task's recorded clean telemetry.
+Python dependencies were also installed into a fresh temporary environment and
+all 110 tests passed from a fresh Git clone. That check does not validate a new
+laptop's graphics drivers or replace the simulator and API trial above.
 The local environment can also run simulator checks; paid provider stages need
 credentials and separate validation.
 
