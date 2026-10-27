@@ -31,17 +31,6 @@ def usage_from_openai(response) -> Usage:
     )
 
 
-def usage_from_claude(message) -> Usage:
-    usage = getattr(message, "usage", None)
-    if usage is None:
-        return Usage(calls=1)
-    return Usage(
-        int(getattr(usage, "input_tokens", 0) or 0),
-        int(getattr(usage, "output_tokens", 0) or 0),
-        calls=1,
-    )
-
-
 def read_text_file(path: Path, max_chars: int) -> str:
     if not path.exists():
         return f"[MISSING FILE: {path}]"

@@ -1,9 +1,8 @@
 """Depth, scene, text-context, and prompt payload assembly."""
 
-from aha_publish import paths
+
 
 from .paths import *
-from .prompts import optional_field_replacements
 
 def load_json_file(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
@@ -102,11 +101,7 @@ def enabled_text_contexts(task_paths: TaskInputs, args: argparse.Namespace) -> l
             (entry.label, entry.path)
             for entry in task_paths.scene_context_paths
         )
-    if args.include_task_config:
-        contexts.extend(
-            (entry.label, entry.path)
-            for entry in task_paths.task_context_paths
-        )
+
     return contexts
 
 
@@ -140,7 +135,6 @@ def grouped_input_inventory(task_paths: TaskInputs) -> str:
         "images": group_paths_as_json(task_paths.image_paths),
         "gripper_sequence": str(task_paths.gripper_sequence_path) if task_paths.gripper_sequence_path else None,
         "scene_context": group_paths_as_json(task_paths.scene_context_paths),
-        "task_context": group_paths_as_json(task_paths.task_context_paths),
         "outputs": group_paths_as_json(task_paths.output_paths),
     }, indent=2)
 
@@ -166,8 +160,6 @@ def build_text_payload(
         .replace("__NAME_FIELD_HINT__", NAME_FIELD_HINT[naming])
         .replace("__NAMING_RULE__", NAMING_RULE[naming])
     )
-    for placeholder, snippet in optional_field_replacements(args).items():
-        user_prompt = user_prompt.replace(placeholder, snippet)
 
     return "\n\n".join([
         user_prompt,
@@ -184,7 +176,6 @@ def build_text_payload(
             "include_grid_image": args.include_grid_image,
             "include_ttm_context": args.include_ttm_context,
             "include_gripper_sequence": getattr(args, "include_gripper_sequence", False),
-            "include_task_config": args.include_task_config,
         }, indent=2),
         "# Grouped input paths",
         grouped_input_inventory(task_paths),

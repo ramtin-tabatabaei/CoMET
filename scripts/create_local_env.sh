@@ -6,7 +6,7 @@ cd "$aha_install_root"
 for required in external/PyRep/setup.py external/RLBench/setup.py \
     external/rlbench-failgen/setup.py external/CoppeliaSim/libcoppeliaSim.so; do
     if [[ ! -f "$required" ]]; then
-        echo "Missing local dependency: $required (see docs/local_setup.md)" >&2
+        echo "Missing local dependency: $required (see README.md, Obtain simulator dependencies)" >&2
         exit 2
     fi
 done

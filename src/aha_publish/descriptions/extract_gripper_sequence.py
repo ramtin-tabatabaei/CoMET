@@ -14,36 +14,6 @@ the gripper extension, then latch graspables) and records, after each waypoint:
   - gripper_open_amount
   - held_after:          objects LATCHED by gripper.grasp(), i.e. registered graspables
 
-Opt-in per-waypoint fields, all OFF by default (see EXTRA_FLAGS):
-  --held-positions   held_positions:    world xyz of each latched object
-  --contacts         contact_after:     respondable task shapes between the fingers
-                     contact_positions: world xyz of each of them
-  --touch-forces     touch_forces:      finger force-sensor readings
-  --tip-positions    tip_position:      arm tip world xyz, plus tip_travel_m
-
-``held_after`` on its own is NOT "what the robot is holding". ``Gripper.grasp(obj)``
-is a question about ONE named object, and the only objects ever asked about are the
-ones the task handed to ``register_graspable_objects``. Tasks whose interaction is
-an articulated part register that part nowhere: change_clock registers nothing at
-all yet turns a crank, take_tray_out_of_oven registers only the tray yet opens the
-oven door, put_shoes_in_box registers only the shoes yet opens the box lid. All of
-them report ``held_after: []`` while the fingers are clamped on something.
-
-CoppeliaSim does know what is between the fingers, so ``--contacts`` asks the
-gripper's own proximity sensor about every shape in the task tree, which names the
-crank, the door handle and the lid. On change_clock it turns ``held_after: []`` into
-``contact_after: ['clock_needle_crank']``, and on take_tray_out_of_oven wp1 into
-``contact_after: ['oven_door']``.
-
-Two things to know when reading ``contact_after``:
-  - It means "inside the jaws", not "held". Combine it with ``state_after``: closed
-    + contact is a grip on that object, open + contact is only the gripper being
-    around or next to it.
-  - The sensor's own single-object read (``simReadProximitySensor``, whose detected
-    handle PyRep's ``ProximitySensor.read()`` discards) is deliberately not used: it
-    reports the nearest detected object, which in practice is the gripper's own
-    finger. Sweeping the task tree with ``is_detected`` skips robot geometry.
-
 Output: outputs/gripper_sequences/<task>.json
 
 Run inside the aha conda env with the CoppeliaSim env vars set. One task per
@@ -53,7 +23,6 @@ process), so more than one task fans out into subprocesses.
 Usage:
     extract_gripper_sequence.py change_clock             # one or more named tasks
     extract_gripper_sequence.py --all --workers 4        # every configured task
-    extract_gripper_sequence.py change_clock --contacts  # add an optional field
 """
 
 from aha_publish import paths
@@ -85,15 +54,6 @@ STALL_STEPS = 5
 # A run where the tip never moves this far produced no trajectory at all, so its
 # whole sequence (every waypoint "closed on nothing") is meaningless.
 MIN_TIP_TRAVEL_M = 0.01
-
-# Optional per-waypoint fields, all off by default: the written record stays the
-# gripper timeline (action / state_after / gripper_open_amount / held_after).
-EXTRA_FLAGS = {
-    "contacts": "--contacts",
-    "held_positions": "--held-positions",
-    "touch_forces": "--touch-forces",
-    "tip_positions": "--tip-positions",
-}
 
 
 def get_all_tasks():
@@ -130,29 +90,6 @@ def world_position(obj):
         return [round(float(v), 6) for v in obj.get_position()]
     except Exception:
         return None
-
-
-def detected_shapes(gripper, task_shapes):
-    """Task shapes the gripper's proximity sensor currently sees between the fingers.
-
-    ``grasp()`` only ever asks about the task's registered graspables, so this asks
-    the same sensor about every shape in the task tree instead. Robot geometry is
-    excluded for free: the sweep never leaves the task's own model tree.
-
-    Only respondable shapes count as contact -- the fingers pass straight through
-    anything else. That also drops the two kinds of ghost the sensor otherwise
-    reports: the visual twin sitting on top of each physical shape
-    (clock_needle_crank_visual) and success/detector markers (success_visual).
-    """
-    sensor = gripper._proximity_sensor  # PyRep keeps it private; there is no accessor
-    found = []
-    for shape in task_shapes:
-        try:
-            if shape.is_respondable() and sensor.is_detected(shape):
-                found.append(shape)
-        except Exception:
-            continue
-    return found
 
 
 def open_amount(gripper):
@@ -210,9 +147,8 @@ def latch_graspables(scene, gripper, graspables):
         step_scene(scene, GRIP_SETTLE_STEPS)
 
 
-def extract(task_name: str, headless: bool = True, extras=frozenset()) -> dict:
+def extract(task_name: str, headless: bool = True) -> dict:
     from failgen.env_wrapper import FailGenEnvWrapper
-    from pyrep.const import ObjectType
 
     env = FailGenEnvWrapper(
         task_name=task_name, headless=headless, record=False,
@@ -238,8 +174,6 @@ def extract(task_name: str, headless: bool = True, extras=frozenset()) -> dict:
         # Read every name while the sim is still up: the result dict is assembled
         # after the finally-block shutdown, where object handles resolve to ''.
         graspable_names = [g.get_name() for g in graspables]
-        task_shapes = task.get_base().get_objects_in_tree(
-            object_type=ObjectType.SHAPE, exclude_base=False)
         tip = robot.arm.get_tip()
 
         state = "Open"
@@ -277,16 +211,13 @@ def extract(task_name: str, headless: bool = True, extras=frozenset()) -> dict:
                 latch_graspables(scene, gripper, graspables)
 
             # 3) record the TRUE held set
-            held, held_positions = [], {}
+            held = []
             try:
                 for obj in gripper.get_grasped_objects():
                     name = obj.get_name()
                     held.append(name)
-                    position = world_position(obj)
-                    if position is not None:
-                        held_positions[name] = position
             except Exception:
-                held, held_positions = [], {}
+                held = []
 
             entry = {
                 "index": i,
@@ -296,30 +227,10 @@ def extract(task_name: str, headless: bool = True, extras=frozenset()) -> dict:
                 "state_after": state,
                 "held_after": held,
             }
-            if "held_positions" in extras:
-                entry["held_positions"] = held_positions
-            if "contacts" in extras:
-                contacts = detected_shapes(gripper, task_shapes)
-                entry["contact_after"] = [s.get_name() for s in contacts]
-                entry["contact_positions"] = {
-                    s.get_name(): world_position(s)
-                    for s in contacts if world_position(s) is not None
-                }
-            if "touch_forces" in extras:
-                try:
-                    entry["touch_forces"] = [
-                        [round(float(c), 4) for c in f]
-                        for f in gripper.get_touch_sensor_forces()
-                    ]
-                except Exception:  # gripper has no touch sensors
-                    entry["touch_forces"] = None
 
-            # Read regardless of the flag: the did-the-arm-move guard needs it. Only
-            # the per-waypoint value is optional.
+            # Validate that the captured trajectory moved the arm.
             tip_position = world_position(tip)
             tip_positions.append(tip_position)
-            if "tip_positions" in extras:
-                entry["tip_position"] = tip_position
             entries.append(entry)
 
         robot.arm.set_control_loop_enabled(control_loop)
@@ -355,15 +266,13 @@ def summarize(data: dict) -> str:
     for e in data["waypoints"]:
         line = (f"wp{e['index']}:{e['action']}/{e['state_after']}"
                 f"/held={','.join(e['held_after']) or '-'}")
-        if "contact_after" in e:
-            line += f"/contact={','.join(e['contact_after']) or '-'}"
         parts.append(line)
     return " ".join(parts)
 
 
-def capture_task(task_name: str, headless: bool, extras=frozenset()) -> bool:
+def capture_task(task_name: str, headless: bool) -> bool:
     try:
-        data = extract(task_name, headless=headless, extras=extras)
+        data = extract(task_name, headless=headless)
     except Exception as exc:  # noqa: BLE001
         print(f"{task_name}: EXTRACT FAILED: {exc}", flush=True)
         return False
@@ -377,8 +286,7 @@ def capture_task(task_name: str, headless: bool, extras=frozenset()) -> bool:
         print(f"{task_name}: ARM NEVER MOVED (tip travel {data['tip_travel_m']} m) "
               f"-- not written; the capture is invalid, not the task", flush=True)
         return False
-    if "tip_positions" not in extras:
-        data.pop("tip_travel_m")
+    data.pop('tip_travel_m')
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"{task_name}.json"
@@ -391,7 +299,6 @@ def worker_command(task_name: str, args) -> list:
     command = [sys.executable, __file__, task_name]
     if not args.headless:
         command.append("--show-simulator")
-    command += [EXTRA_FLAGS[name] for name in sorted(args.extras)]
     return command
 
 
@@ -419,24 +326,9 @@ def parse_args():
                         help="Tasks to run at once (one subprocess each).")
     parser.add_argument("--headless", action="store_true", default=True)
     parser.add_argument("--show-simulator", action="store_false", dest="headless")
-    parser.add_argument("--contacts", action="store_true",
-                        help="Also record contact_after/contact_positions: the "
-                             "respondable task shapes between the fingers, which is "
-                             "the only way unregistered knobs, handles and lids get "
-                             "named (held_after structurally cannot show them).")
-    parser.add_argument("--held-positions", action="store_true", dest="held_positions",
-                        help="Also record the world xyz of each latched object.")
-    parser.add_argument("--touch-forces", action="store_true", dest="touch_forces",
-                        help="Also record the finger force-sensor readings.")
-    parser.add_argument("--tip-positions", action="store_true", dest="tip_positions",
-                        help="Also record the per-waypoint arm tip xyz and tip_travel_m.")
-    parser.add_argument("--extras", action="store_true",
-                        help="Shorthand for every optional field above.")
     args = parser.parse_args()
     if not args.tasks and not args.all:
         parser.error("give one or more task names, or --all")
-    args.extras = (set(EXTRA_FLAGS) if args.extras
-                   else {name for name in EXTRA_FLAGS if getattr(args, name)})
     return args
 
 
@@ -447,7 +339,7 @@ def main():
     # CoppeliaSim does not tear down cleanly across resets, so a single task runs
     # here and anything more fans out one subprocess per task.
     if len(tasks) == 1:
-        sys.exit(0 if capture_task(tasks[0], args.headless, args.extras) else 1)
+        sys.exit(0 if capture_task(tasks[0], args.headless) else 1)
 
     failures = run_in_parallel(tasks, args)
     if failures:

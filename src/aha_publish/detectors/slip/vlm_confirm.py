@@ -17,7 +17,7 @@ import re
 
 REPO_ROOT = (paths.PROJECT_ROOT)
 COLLISION_VLM_PATH = (paths.SOURCE_DIR / 'detectors/collision/vlm_confirm.py')
-VLM_TRACE_DIR = (paths.OUTPUT_DIR / 'vlm_traces')
+
 BT_CONDITIONS_DIR = (paths.BT_DIR)
 
 INCLUDE_WAYPOINT_CONTEXT = (
@@ -60,7 +60,7 @@ _SLIP_FRAME_LABELS = ", ".join(
 
 DEFAULT_OPENAI_MODEL = os.getenv(
     "OPENAI_SLIP_VLM_MODEL",
-    os.getenv("OPENAI_MODEL", "gpt-5.4"),
+    os.getenv("OPENAI_MODEL", "gpt-5.6-sol"),
 )
 
 SYSTEM_PROMPT = (
@@ -173,94 +173,10 @@ def _load_collision_helpers():
 
 
 _helpers = _load_collision_helpers()
-show_camera_sequence = _helpers.show_camera_sequence
 collect_camera_images = _helpers.collect_camera_images
-collect_display_images = _helpers.collect_display_images
 
 
-def save_camera_grid(
-    recent_obs_list,
-    step_offsets,
-    camera_names,
-    env_wrapper,
-    out_dir,
-    tag="",
-):
-    """Save the exact camera montage sent to the slip VLM.
 
-    Rows represent time offsets and columns represent cameras. Returns the saved
-    path, or an empty string if there is nothing to save or matplotlib is missing.
-    """
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except ModuleNotFoundError:
-        return ""
-
-    if step_offsets is None:
-        step_offsets = [None] * len(recent_obs_list)
-
-    grid_rows = []
-    all_cameras = []
-
-    for observation in recent_obs_list:
-        images = collect_display_images(
-            observation,
-            camera_names=camera_names,
-            env_wrapper=env_wrapper,
-        )
-        grid_rows.append(dict(images))
-
-        for camera_name, _ in images:
-            if camera_name not in all_cameras:
-                all_cameras.append(camera_name)
-
-    if not all_cameras:
-        return ""
-
-    figure, axes = plt.subplots(
-        len(grid_rows),
-        len(all_cameras),
-        figsize=(3.2 * len(all_cameras), 2.6 * len(grid_rows)),
-        squeeze=False,
-    )
-
-    for row_index, (grid_row, offset) in enumerate(zip(grid_rows, step_offsets)):
-        for column_index, camera_name in enumerate(all_cameras):
-            axis = axes[row_index][column_index]
-            image = grid_row.get(camera_name)
-
-            if image is not None:
-                axis.imshow(image)
-
-            axis.axis("off")
-
-            if row_index == 0:
-                axis.set_title(camera_name, fontsize=9)
-
-            if column_index == 0:
-                if offset is None:
-                    label = f"frame {row_index + 1}"
-                elif offset == 0:
-                    label = "current"
-                else:
-                    label = f"-{offset}"
-
-                axis.set_ylabel(label, fontsize=10, rotation=0, labelpad=30)
-
-    figure.suptitle(f"Images sent to slip VLM {tag}".strip())
-    figure.tight_layout()
-
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%H%M%S_%f")
-    path = Path(out_dir) / f"slip_vlm_grid_{timestamp}.png"
-
-    figure.savefig(path, dpi=100)
-    plt.close(figure)
-
-    return str(path)
 
 
 def sample_recent_observations(obs_list):
@@ -493,7 +409,7 @@ def format_telemetry_history(history, recent_steps=80):
     header = (
         f"{'step':>5}  {'hold_phase':>10}  "
         f"{'grip_force':>10}  "
-        f"{'force_drop':>10}  {'slip':>5}"
+        f"{'force_drop':>10}"
     )
 
     lines = [
@@ -507,8 +423,7 @@ def format_telemetry_history(history, recent_steps=80):
             f"{row.get('step', 0):>5}  "
             f"{str(bool(row.get('holding_required_phase', False))):>10}  "
             f"{float(row.get('grip_force', 0.0)):>10.3f}  "
-            f"{float(row.get('grip_force_drop', 0.0)):>10.3f}  "
-            f"{str(bool(row.get('slip', False))):>5}"
+            f"{float(row.get('grip_force_drop', 0.0)):>10.3f}"
         )
 
     return "\n".join(lines)
@@ -546,52 +461,7 @@ def format_detection_event(row):
     )
 
 
-def _write_vlm_trace(
-    trace_dir,
-    model,
-    prompt_text,
-    image_manifest,
-    response_text,
-    parsed_result,
-):
-    trace_dir = Path(trace_dir or VLM_TRACE_DIR)
-    trace_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    path = trace_dir / f"slip_vlm_trace_{timestamp}.json"
-
-    payload = {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "model": model,
-        "system_prompt": SYSTEM_PROMPT,
-        "user_prompt_text": prompt_text,
-        "image_manifest": image_manifest,
-        "raw_response_text": response_text,
-        "parsed_result": parsed_result,
-    }
-
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(payload, file, indent=2, sort_keys=True)
-
-    return str(path)
-
-
-def confirm_slip_with_openai(
-    recent_obs_list,
-    step_offsets=None,
-    row=None,
-    telemetry_history=None,
-    env_wrapper=None,
-    task_name=None,
-    waypoint_index=None,
-    waypoints_description_path=None,
-    camera_names=DEFAULT_CAMERA_NAMES,
-    model=DEFAULT_OPENAI_MODEL,
-    max_output_tokens=800,
-    preview_images=True,
-    trace=False,
-    trace_dir=VLM_TRACE_DIR,
-):
+def confirm_slip_with_openai(recent_obs_list, step_offsets=None, row=None, telemetry_history=None, env_wrapper=None, task_name=None, waypoint_index=None, waypoints_description_path=None, camera_names=DEFAULT_CAMERA_NAMES, model=DEFAULT_OPENAI_MODEL, max_output_tokens=800):
     if model is None:
         model = DEFAULT_OPENAI_MODEL
 
@@ -600,40 +470,11 @@ def confirm_slip_with_openai(
             "recent_obs_list must contain at least one observation."
         )
 
-    if preview_images:
-        show_camera_sequence(
-            recent_obs_list,
-            step_offsets=step_offsets,
-            camera_names=camera_names,
-            env_wrapper=env_wrapper,
-            title="Images that will be sent to slip VLM",
-        )
 
-        try:
-            import matplotlib.pyplot as plt
 
-            print("  [vlm] Close the image window to continue...")
-            plt.show(block=True)
-        except Exception:
-            pass
 
-    saved_grid = ""
-    grid_dir = os.getenv("AHA_SLIP_VLM_SAVE_GRID", "").strip()
 
-    if grid_dir:
-        tag = f"wp{waypoint_index}" if waypoint_index is not None else ""
-
-        saved_grid = save_camera_grid(
-            recent_obs_list,
-            step_offsets,
-            camera_names,
-            env_wrapper,
-            grid_dir,
-            tag=tag,
-        )
-
-        if saved_grid:
-            print(f"  [vlm:slip] camera grid saved -> {saved_grid}")
+    pass
 
     try:
         import openai
@@ -784,16 +625,6 @@ def confirm_slip_with_openai(
 
     result = _extract_json(response.output_text)
 
-    trace_path = None
-    if trace:
-        trace_path = _write_vlm_trace(
-            trace_dir=trace_dir,
-            model=model,
-            prompt_text=prompt_text,
-            image_manifest=image_manifest,
-            response_text=response.output_text,
-            parsed_result=result,
-        )
 
     output = {
         "slip_happened": result["slip_happened"],
@@ -802,10 +633,7 @@ def confirm_slip_with_openai(
         "camera_names": all_camera_names,
     }
 
-    if trace_path:
-        output["trace_path"] = trace_path
 
-    if saved_grid:
-        output["grid_path"] = saved_grid
+    pass
 
     return output

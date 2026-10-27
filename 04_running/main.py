@@ -24,7 +24,7 @@ def main():
         require(paths.BT_DIR / f"{task}.bt_conditions.json", args.dry_run)
         require(paths.TTM_CONTEXT_DIR / f"{task}.llm_context.json", args.dry_run)
     env = runtime_environment(environment(), tasks, dry_run=args.dry_run)
-    options = ["--out", paths.RUNS_DIR, "--workers", args.workers]
+    options = ["batch", "--out", paths.RUNS_DIR, "--workers", args.workers]
     for task in tasks:
         options += ["--task", task]
     # The batch backend includes a clean baseline; 'none' selects only it.
@@ -38,7 +38,7 @@ def main():
         options += ["--vlm-model", args.model]
     if args.redo:
         options += ["--redo"]
-    run("running.run_all_tasks_all_failures", options, args.dry_run, env=env)
+    run("running.bt_runner", options, args.dry_run, env=env)
 
 
 if __name__ == "__main__":

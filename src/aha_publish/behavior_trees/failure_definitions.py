@@ -1,6 +1,10 @@
-"""Failure definition loading, hold conditions, and measured-context cleanup."""
+"""Catalogue failure links, runtime hold conditions, and scene-name mappings."""
 
 from aha_publish import paths
+
+from functools import lru_cache
+
+from aha_publish.detectors import load_primitive_policy
 
 from .io_context import *
 
@@ -9,8 +13,8 @@ from .io_context import *
 #
 # Continuous "must stay true while the stage runs" invariants, one per runtime
 # detector in aha_scripts/detectors/. Unlike pre/postconditions these are NOT produced by the
-# language model; the BT maker attaches the full set to every waypoint
-# deterministically. This list is the catalog: it is the only definition of the
+# language model; the BT maker assigns them by config/detector_primitives.json.
+# This list is the catalog: it is the only definition of the
 # hold-condition set, and the text below is what lands in every generated BT.
 # ------------------------------------------------------------------------------
 DEFAULT_HOLD_CONDITION_DETECTORS = [
@@ -20,13 +24,6 @@ DEFAULT_HOLD_CONDITION_DETECTORS = [
         "condition": "no_collision() == True",
         "label": "No collision",
         "definition": "No unexpected collision or contact spike occurs while the stage executes. Backed by the collision detector (joint-torque deltas/norms compared against the task's successful-run torque stats).",
-    },
-    {
-        "detector": "freezing",
-        "failure": "freezing",
-        "condition": "not_frozen() == True",
-        "label": "Not frozen",
-        "definition": "The robot keeps making progress and does not freeze or stall during the stage. Backed by the freezing detector (joint position/velocity stillness plus camera-motion across views).",
     },
     {
         "detector": "slip",
@@ -54,8 +51,8 @@ DEFAULT_HOLD_CONDITION_DETECTORS = [
 HOLD_CONDITIONS_DESCRIPTION = (
     "Continuous invariants that must stay TRUE for the whole time a waypoint/stage is "
     "executing, as opposed to the pre/post checkpoints. Each one maps one-to-one to a "
-    "runtime detector in the aha_scripts/detectors/ folder. The BT maker attaches the full set to "
-    "every waypoint deterministically; these are NOT produced by the language model."
+    "runtime detector. Configured primitive assignments determine where they apply; "
+    "these are NOT produced by the language model."
 )
 
 # Failure names the catalogue does not assign because it does not define the two
@@ -83,11 +80,16 @@ def hold_condition_detectors(failure_definitions: dict | None = None) -> list[di
     return _HOLD_CONDITION_DETECTORS or DEFAULT_HOLD_CONDITION_DETECTORS
 
 
-def build_hold_condition_blocks() -> list[dict]:
+def build_hold_condition_blocks(primitive=None, *, primitive_policy=None) -> list[dict]:
     """Per-stage hold-condition blocks built from the active detector catalog."""
+    if primitive is not None and primitive_policy is None:
+        primitive_policy = load_primitive_policy()
     blocks = []
     for entry in hold_condition_detectors():
         detector = entry.get("detector", "")
+        if (primitive is not None and detector in primitive_policy
+                and str(primitive).strip().lower() not in primitive_policy[detector]):
+            continue
         failure = entry.get("failure") or detector
         definition = entry.get("definition", "")
         blocks.append(
@@ -106,38 +108,32 @@ def build_hold_condition_blocks() -> list[dict]:
 
 
 def attach_hold_conditions(stages: list[dict]) -> list[dict]:
-    """Give every stage the full, deterministic set of hold conditions.
-
-    Idempotent: it overwrites any existing ``hold_conditions`` so the set always
-    matches the current catalog, even for older saved BTs that predate the field.
-    """
+    """Assign hold detectors using each stage's primitive and the current config."""
+    policy = load_primitive_policy()
     for stage in stages:
-        stage["hold_conditions"] = build_hold_condition_blocks()
+        stage["hold_conditions"] = build_hold_condition_blocks(
+            stage.get("primitive") or "", primitive_policy=policy)
     return stages
 
 
-def hold_conditions_for_saved_stage(saved_stage: dict) -> list[dict]:
-    """Hold-condition blocks for a reloaded stage, honoring user removals.
-
-    Hold conditions are otherwise deterministic, but the GUI now lets the user
-    delete individual detectors. We therefore distinguish:
-      * key absent  -> older saved BT that predates the field: attach the full
-        catalog so nothing is lost.
-      * key present -> the user curated the set (possibly to empty): keep only the
-        detectors still listed, refreshed against the current catalog so their
-        labels/definitions stay up to date.
-    """
+def hold_conditions_for_saved_stage(saved_stage: dict, *, primitive_policy=None) -> list[dict]:
+    """Apply config assignments; retain saved choices for unconfigured detectors."""
+    if primitive_policy is None:
+        primitive_policy = load_primitive_policy()
     saved = saved_stage.get("hold_conditions") if isinstance(saved_stage, dict) else None
-    full_blocks = build_hold_condition_blocks()
+    primitive = (saved_stage or {}).get("primitive") or ""
+    full_blocks = build_hold_condition_blocks(primitive, primitive_policy=primitive_policy)
     if not isinstance(saved, list):
         return full_blocks
     kept_detectors = {
         str(item.get("detector") or "").strip()
         for item in saved
-        if isinstance(item, dict)
+        if isinstance(item, dict) and item.get("selected", True) is not False
     }
     kept_detectors.discard("")
-    return [block for block in full_blocks if block.get("detector") in kept_detectors]
+    return [block for block in full_blocks
+            if block.get("detector") in primitive_policy
+            or block.get("detector") in kept_detectors]
 
 
 def catalogue_failure_names() -> list[str]:
@@ -178,53 +174,42 @@ def load_failure_definitions() -> dict:
         "failure_categories": {name: {"id": name} for name in catalogue_failure_names()},
     }
 
-MEASURED_CONTEXT_KEY_PARTS = (
-    "dist" "ance",
-    "offset",
-    "tolerance",
-    "measurement",
-    "magnitude",
-    "approx_motion_from_previous_waypoint",
-    "waypoint_relationship_used",
-)
 
-def strip_measured_context(value):
-    if isinstance(value, dict):
-        cleaned = {}
-        for key, item in value.items():
-            key_text = str(key).lower()
-            if any(part in key_text for part in MEASURED_CONTEXT_KEY_PARTS):
-                continue
-            cleaned[key] = strip_measured_context(item)
-        return cleaned
-    if isinstance(value, list):
-        return [strip_measured_context(item) for item in value]
-    if isinstance(value, str):
-        value = re.sub(r"\b\d+(?:\.\d+)?\s*cm\b", "qualitative relation", value, flags=re.IGNORECASE)
-        value = re.sub(r"\b\d+(?:\.\d+)?\s*m\b", "qualitative relation", value, flags=re.IGNORECASE)
-        value = re.sub(r"\b" + "dist" "ance" + r"\b", "spatial relation", value, flags=re.IGNORECASE)
-    return value
+@lru_cache(maxsize=256)
+def _predicate_template_pattern(template: str) -> re.Pattern:
+    """Match a catalogue template with object arguments bound to concrete names."""
+    compact = re.sub(r"\s+", "", template)
+    parts = re.split(r"((?:<[^>]+>,)+\.\.\.|<[^>]+>)", compact)
+    pattern = []
+    for part in parts:
+        if part.startswith("<") and part.endswith("..."):
+            # Templates such as objects(<object_1>, <object_2>, ...) are variadic.
+            pattern.append(r"[^(),]+(?:,[^(),]+)*")
+        elif part.startswith("<") and part.endswith(">"):
+            pattern.append(r"[^(),]+")
+        else:
+            pattern.append(re.escape(part))
+    return re.compile("".join(pattern), re.IGNORECASE)
 
-def task_context_without_measured_values(task_context: str) -> str:
-    try:
-        parsed = json.loads(task_context)
-    except json.JSONDecodeError:
-        cleaned = re.sub(
-            r"\b\d+(?:\.\d+)?\s*(?:cm|m)\b",
-            "qualitative relation",
-            str(task_context),
-            flags=re.IGNORECASE,
-        )
-        cleaned = re.sub(r"\b" + "dist" "ance" + r"\b", "spatial relation", cleaned, flags=re.IGNORECASE)
-        return cleaned
-    return json.dumps(strip_measured_context(parsed), indent=2)
 
-# Keys holding a raw simulator handle. The BT speaks the description's
-# descriptive ``name`` vocabulary (basketball, hoop) because its conditions are
-# checked visually; the handles (ball, basket_ball_hoop_respondable) mean nothing
-# to a camera. They are dropped from the prompt rather than explained to the
-# model, so it cannot pick one up.
-SIMULATOR_HANDLE_KEYS = ("original_name",)
+def catalogue_failure_links(text: str) -> list[dict]:
+    """Look up a missing link from exact predicate templates in the current JSON.
+
+    Unmatched or ambiguous predicates stay unlinked; no failure is guessed.
+    """
+    from .prompts import load_condition_rules, _iter_condition_rules
+
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return []
+    matches = {}
+    for _category, rule in _iter_condition_rules(load_condition_rules()):
+        if _predicate_template_pattern(rule["predicate_template"]).fullmatch(compact):
+            matches[rule["failure"]] = str(rule.get("reason") or "")
+    if len(matches) != 1:
+        return []
+    return [{"failure": failure, "reason": reason} for failure, reason in matches.items()]
+
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -270,67 +255,6 @@ def scene_name_aliases(task_context) -> dict[str, str]:
         aliases.pop(token, None)
     return aliases
 
-def strip_simulator_handles(value, aliases: dict[str, str] | None = None):
-    """Drop original_name keys and rewrite handles left behind in free text.
-
-    Removing the field is not enough on its own: the description maker also
-    quotes handles inside prose ("...this sequence targets target_button_wrap1,
-    the plus_button"), so the model can still read one there. Those occurrences
-    are renamed to the descriptive name instead of deleted, which keeps the
-    sentence meaningful.
-    """
-    aliases = aliases or {}
-    if isinstance(value, dict):
-        return {
-            key: strip_simulator_handles(item, aliases)
-            for key, item in value.items()
-            if str(key).strip() not in SIMULATOR_HANDLE_KEYS
-        }
-    if isinstance(value, list):
-        return [strip_simulator_handles(item, aliases) for item in value]
-    if isinstance(value, str) and aliases:
-        for handle, name in aliases.items():
-            value = re.sub(r"\b" + re.escape(handle) + r"\b", name, value)
-    return value
-
-def task_context_for_prompt(task_context: str) -> str:
-    """The task context as the language model should see it.
-
-    Drops measured values (so conditions stay qualitative) and raw simulator
-    handles (so object identifiers can only be the descriptive names). The
-    unstripped context is still what the deterministic passes receive —
-    ``normalize_scene_object_names`` needs ``original_name`` to repair handles
-    the model may echo out of the waypoint prose.
-    """
-    try:
-        parsed = json.loads(task_context)
-    except json.JSONDecodeError:
-        return task_context_without_measured_values(task_context)
-    aliases = scene_name_aliases(parsed)
-    return json.dumps(
-        strip_simulator_handles(strip_measured_context(parsed), aliases), indent=2
-    )
-
-FAILURE_NAME_ALIASES = {
-    "approach_alignment_error": "WrongPosition",
-    "missed_grasp": "ExecutionSequenceMismatch",
-    "slip_or_drop": "ExecutionSequenceMismatch",
-    "lift_or_transfer_pose_error": "WrongPosition",
-    "release_error": "ExecutionSequenceMismatch",
-    "execution_sequence_mismatch": "ExecutionSequenceMismatch",
-    "collision_or_obstruction": "WrongPosition",
-    "object_not_found": "ObjectNotFound",
-    "wrong_object_selection": "WrongObjectSelection",
-    "wrong_position": "WrongPosition",
-    "wrong_orientation": "WrongOrientation",
-}
-
-def canonical_failure_name(name: str) -> str:
-    stripped = str(name or "").strip()
-    return FAILURE_NAME_ALIASES.get(
-        stripped,
-        FAILURE_NAME_ALIASES.get(stripped.lower(), stripped),
-    )
 
 def iter_failure_definition_entries(failure_definitions: dict) -> list[tuple[str, dict]]:
     categories = failure_definitions.get("failure_categories")
@@ -358,101 +282,3 @@ def failure_definition_summaries(failure_definitions: dict) -> list[dict]:
             }
         )
     return summaries
-
-def infer_failure_links(text: str) -> list[dict]:
-    lower = text.lower()
-
-    if any(token in lower for token in ["object_found", "detected", "visible", "pose_confidence", "valid point cloud", "point_cloud", "object_pose_confidence"]):
-        return [
-            {
-                "failure": "ObjectNotFound",
-                "reason": "Confirms the required task object is visible and localized before acting.",
-            }
-        ]
-
-    if any(token in lower for token in ["target_id", "instance_id", "object_class", "attribute", "selected_object", "matches_task"]):
-        return [
-            {
-                "failure": "WrongObjectSelection",
-                "reason": "Verifies the robot is engaging the task-specified object instance.",
-            }
-        ]
-
-    if any(token in lower for token in ["orientation", "approach_axis", "wrist", "roll", "pca", "grasp_axis"]):
-        return [
-            {
-                "failure": "WrongOrientation",
-                "reason": "Checks that the gripper orientation is compatible with the grasp.",
-            }
-        ]
-
-    if any(token in lower for token in [
-        "between_fingers",
-        "gripper_surrounds",
-        "centerline",
-        "grasp_pose",
-        "aligned_with",
-        "on(",
-        "inside(",
-        "next_to(",
-        "alignment",
-        "dist" "ance(",
-        "vertical_delta",
-        "horizontal_delta",
-        "pose_error",
-        "waypoint",
-        "wp",
-        "lift",
-        "transfer",
-        "above",
-        "target",
-        "release_pose",
-        "place_pose",
-        "clearance",
-        "collision",
-        "obstruction",
-    ]):
-        return [
-            {
-                "failure": "WrongPosition",
-                "reason": "Checks that the end effector or object is at the expected spatial relation.",
-            }
-        ]
-
-    if any(token in lower for token in [
-        "object_in_gripper",
-        "in_gripper",
-        "gripper_contains",
-        "attached_to_end_effector",
-        "gripper_correct_grasp",
-        "contact_force",
-        "grasp_force",
-        "held",
-        "carry",
-        "gripper_condition",
-        "gripper_is_open",
-        "gripper_is_closed",
-        "open_gripper",
-        "gripper_closed",
-        "stage_",
-        "robot_state",
-        "controller_enabled",
-        "motion_planner",
-        "previous_stage",
-        "sequence",
-        "success_flag",
-        "release",
-    ]):
-        return [
-            {
-                "failure": "ExecutionSequenceMismatch",
-                "reason": "Checks the direct gripper, held-object, or release state required at this point.",
-            }
-        ]
-
-    return [
-        {
-            "failure": "ExecutionSequenceMismatch",
-            "reason": "Checks the direct gripper, held-object, or release state required at this point.",
-        }
-    ]

@@ -9,8 +9,8 @@ from aha_publish.commands import entry, parser, run_stage, selected_tasks
 
 def main():
     p = parser('Generate TTM context, evidence, descriptions, BTs, calibration, runs, and scores.', tasks=True)
-    p.add_argument('--provider', choices=['openai', 'claude'], default='openai',
-                   help='Provider for descriptions and BT generation; runtime VLM uses OpenAI.')
+    p.add_argument('--provider', choices=['openai'], default='openai',
+                   help='Provider for descriptions and BT generation. OpenAI is supported.')
     p.add_argument('--generation-model', help='Model for descriptions and BT generation.')
     p.add_argument('--verification-model', help='OpenAI model for runtime verification.')
     p.add_argument('--episodes', type=int, default=10, help='Clean calibration episodes per task.')
@@ -29,7 +29,8 @@ def main():
     run_stage('01_ttm_context', selection, args.dry_run)
     run_stage('02_descriptions', [*selection, *generation], args.dry_run)
     run_stage('03_behavior_trees', [*selection, *generation,
-                                  '--description-provider', args.provider], args.dry_run)
+                                  '--description-provider', args.provider,
+                                  '--generate-only'], args.dry_run)
     run_stage('calibration', ['all', *selection, '--episodes', args.episodes,
                              '--workers', args.workers, '--force'], args.dry_run)
     running = [*selection, '--failures', args.failures, '--checks', args.checks,

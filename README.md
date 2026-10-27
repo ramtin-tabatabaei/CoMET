@@ -20,7 +20,7 @@ files from another AHA scripts checkout.
 | 2. Descriptions | `02_descriptions/main.py` | Waypoint screenshots, camera grids, gripper sequences, and task descriptions |
 | 3. Behavior trees | `03_behavior_trees/main.py` | Conditions used to verify each waypoint |
 | 4. Running | `04_running/main.py` | Clean/failure episode logs, detector traces, and VLM events |
-| 5. Scoring | `05_scoring/main.py` | Checkpoint samples, detection metrics, and optional confusion figures |
+| 5. Scoring | `05_scoring/main.py` | Checkpoint samples and detection metrics |
 
 Before running step 4 for the first time, use `calibration/main.py all` to collect
 clean episodes and calculate detector thresholds. Later, use `compute` to change
@@ -30,12 +30,71 @@ Step 1 **inspects existing TTM models**; it does not create or modify `.ttm` mod
 
 ## Setup
 
-This working folder includes local copies of CoppeliaSim 4.1, PyRep, RLBench
-(including task models), and AHA's modified `rlbench-failgen` in `external/`.
+Clone the release and enter its root directory:
+
+```bash
+git clone https://github.com/ramtin-tabatabaei/aha_public.git
+cd aha_public
+```
+
+Use Linux with Conda, a C/C++ compiler, graphics drivers, and an OpenGL/X
+display. Python 3.10 is installed by the environment script. CoppeliaSim 4.1,
+PyRep, RLBench task models, and FailGen are separate dependencies; a Git clone
+does not include `external/`. Obtain them below before creating the environment.
+
+### Obtain simulator dependencies
+
+Run these commands from this repository's root. The source revisions match the
+locally validated dependencies. The two bundled patches preserve AHA's backend
+changes, task fixes, failure injectors, and portable configuration paths.
+
+```bash
+mkdir -p external
+
+git clone https://github.com/stepjam/PyRep.git external/PyRep
+git -C external/PyRep checkout 8f420be8064b1970aae18a9cfbc978dfb15747ef
+
+git clone --branch peract https://github.com/MohitShridhar/RLBench.git external/RLBench
+git -C external/RLBench checkout ad991951bc53e4f3b73b803a75cf4b7d55295cf7
+
+git clone https://github.com/NVlabs/AHA.git external/AHA-sources
+git -C external/AHA-sources checkout 0d39c0591566ddaf997be5822f3dead8e08501aa
+cp -a external/AHA-sources/aha/Data_Generation/rlbench-failgen external/rlbench-failgen
+
+git apply --check --directory=external/RLBench patches/rlbench.patch
+git apply --directory=external/RLBench patches/rlbench.patch
+git apply --check --directory=external/rlbench-failgen patches/failgen.patch
+git apply --directory=external/rlbench-failgen patches/failgen.patch
+```
+
+Apply the patches once to fresh source copies. Existing local copies prepared
+for this release already contain these changes.
+
+Download the CoppeliaSim 4.1 archive appropriate for your Linux host from the
+[AHA installation instructions](https://github.com/NVlabs/AHA#2-pyrep-and-coppelia-simulator).
+For the Ubuntu 20.04 build used here:
+
+```bash
+curl -fL --retry 3 \
+  https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz \
+  -o external/CoppeliaSim.tar.xz
+mkdir -p external/CoppeliaSim
+tar -xJf external/CoppeliaSim.tar.xz --strip-components=1 -C external/CoppeliaSim
+ln -sf libcoppeliaSim.so external/CoppeliaSim/libcoppeliaSim.so.1
+```
+
+On Ubuntu, typical host packages include `build-essential`, `libgl1`, `libegl1`,
+`libxrender1`, `libxi6`, `libxrandr2`, `libxkbcommon-x11-0`,
+`libxcb-xinerama0`, and `libfontconfig1`. Headless runs also need `xvfb` and
+`xauth`, or an existing X server with OpenGL support. See the
+[PyRep headless setup](https://github.com/stepjam/PyRep#running-headless)
+for graphics-server configuration.
+
+### Create and activate the environment
+
 Create a fresh Python 3.10 Conda environment **inside this folder**:
 
 ```bash
-cd AHA_publish_version
 bash scripts/create_local_env.sh
 source scripts/activate_local.sh
 python scripts/check_local_env.py
@@ -48,29 +107,39 @@ builds PyRep against the local simulator. For each new terminal, run
 old research paths with paths inside this checkout. It does not use `setup_aha`
 or source your `.bashrc`.
 
-Linux system libraries, graphics drivers, an OpenGL/X display, and Conda itself
-are still host prerequisites. See [local setup](docs/local_setup.md) for details.
-The large `external/`, `.conda/`, and cache directories are ignored by Git;
-include `external/` when copying this working folder to another machine, then
-rebuild the environment there.
+The large `external/`, `.conda/`, and cache directories are ignored by Git.
+After moving the checkout, recreate `.conda/aha-publish`; Conda environments and
+editable installs contain absolute paths. Keep dependency licenses with their
+source copies.
 
-For description generation, BT generation, or VLM verification, set the provider's
+For a headless simulator check that does not call an API:
+
+```bash
+xvfb-run -a -s "-screen 0 1400x900x24" \
+  python 01_ttm_context/main.py --task basketball_in_hoop
+```
+
+### API credentials and output paths
+
+For description generation, BT generation, or VLM verification, set your OpenAI
 key in the shell before running the command:
 
 ```bash
 export OPENAI_API_KEY="your-key"
-# Optional Claude generation:
-python -m pip install -r requirements-claude.txt
-export ANTHROPIC_API_KEY="your-key"
 ```
 
 Provider calls use your API account. Credentials are read from environment
 variables. `.env.example` documents settings; the code does not automatically
 read that file or shell profiles. `--model` selects a model for a stage. Steps 2
-and 3 support OpenAI or Claude; step 4's VLM verification uses OpenAI.
+and 3, along with step 4's VLM verification, use OpenAI.
+OpenAI calls default to [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+(`gpt-5.6-sol`), including condition-rule generation,
+descriptions, behavior-tree generation/review, and runtime verification.
+Explicit model arguments and model environment variables override this default.
 
 All generated files default to `outputs/` inside this folder. To use another
-location, set `AHA_OUTPUT_ROOT` **consistently for all stages**:
+location, set `AHA_OUTPUT_ROOT` **consistently for all stages**, after sourcing
+`scripts/activate_local.sh`. Activation resets the output paths to this checkout:
 
 ```bash
 export AHA_OUTPUT_ROOT=/absolute/path/to/aha-results
@@ -88,7 +157,9 @@ this release stores its generated files.
 
 ## Generate everything with one command
 
-After setup, start the complete workflow from an empty output folder:
+After setup, start the complete workflow from an empty output folder. The
+bundled condition-rule catalogue is ready to use; customize it first only if
+you need different rules (see [Condition-rule catalogue](#condition-rule-catalogue)):
 
 ```bash
 python run_pipeline.py --task basketball_in_hoop
@@ -102,6 +173,8 @@ python run_pipeline.py --all
 ```
 
 This runs steps 1, 2, 3, clean calibration, 4, and 5 in order. Step 2 captures
+ordinary waypoint images for the combined grid; extra gripper open/close image
+rows are excluded. It captures
 the gripper sequence before sending the description prompt to the model. Its
 file is `outputs/gripper_sequences/<task>.json`, generated by the extractor
 included in this release. Missing or failed gripper capture stops description
@@ -117,8 +190,8 @@ below. Use a new `AHA_OUTPUT_ROOT` to keep a previous experiment separately.
 
 ## Run one task, in order
 
-Replace `basketball_in_hoop` with a task name from your failgen configs. Before
-step 3a, edit the generator and prepare the taxonomy input as described in
+Replace `basketball_in_hoop` with a task name from your failgen configs. Step 3a
+is only needed when customizing the bundled catalogue, as described in
 [Condition-rule catalogue](#condition-rule-catalogue).
 
 ```bash
@@ -128,7 +201,7 @@ python 01_ttm_context/main.py --task basketball_in_hoop
 # 2. Capture images and gripper evidence, then generate the description.
 python 02_descriptions/main.py --task basketball_in_hoop
 
-# 3a. Generate the shared condition-rule catalogue after editing its inputs.
+# 3a. Optional: regenerate the shared catalogue after changing its inputs.
 python src/aha_publish/behavior_trees/condition_rule_generator.py \
   --input config/condition_taxonomy_input.json
 
@@ -138,7 +211,7 @@ python 03_behavior_trees/main.py --task basketball_in_hoop
 # Calibrate before the first monitored evaluation.
 python calibration/main.py all --task basketball_in_hoop --episodes 10
 
-# 4. Run a clean episode with condition checks and detector confirmation.
+# 4. Run a clean episode with condition checks and slip/collision VLM confirmation.
 python 04_running/main.py --task basketball_in_hoop
 
 # Include the supported injected failure cases and a clean baseline.
@@ -148,8 +221,9 @@ python 04_running/main.py --task basketball_in_hoop --failures all
 python 05_scoring/main.py
 ```
 
-Append `--dry-run` to any public command to print its planned commands without
-launching simulation, calling an API, or writing output. `--help` works without
+Append `--dry-run` to a numbered stage command, `calibration/main.py`, or
+`run_pipeline.py` to print its planned commands without launching simulation,
+calling an API, or writing output. `--help` works without
 a configured simulator. Failures in a subprocess stop the current public command.
 
 Steps 1–4 accept repeated `--task` arguments or `--all`. Calibration accepts
@@ -161,12 +235,13 @@ simultaneous simulator instances; it defaults to one.
 
 Useful variants:
 
+The single-episode runner and batch coordinator share `src/aha_publish/running/bt_runner.py`.
+Step 4 uses its `batch` command. Use `python -m aha_publish.running.bt_runner single --help`
+or `python -m aha_publish.running.bt_runner batch --help` for direct runner options.
+
 ```bash
 # Reuse step 2's captured evidence while changing the description model.
 python 02_descriptions/main.py --task basketball_in_hoop --reuse-evidence --model YOUR_MODEL
-
-# Read Claude descriptions and generate the BT with Claude.
-python 03_behavior_trees/main.py --task basketball_in_hoop --provider claude --description-provider claude
 
 # Detector-only evaluation, without runtime VLM calls.
 python 04_running/main.py --task basketball_in_hoop --checks detectors --failures collision
@@ -187,19 +262,39 @@ pipeline. No prepared gripper sequences from `task_description_maker` are needed
 
 Step 4 resumes existing cases. Use `--redo` after changing BTs, detector settings,
 or calibration if you need fresh results. A new output root can keep experiments
-separate. Step 3 regenerates the selected task's BT. Step 1 can skip existing
+separate. Step 3 opens BT Condition Studio in your browser by default and
+generates a fresh BT for the selected task. Keep the terminal running while
+using the interface; press Ctrl+C when finished before starting the next stage.
+Use `--generate-only` to generate and save without opening the interface.
+Multiple-task runs, `--all`, and `run_pipeline.py` use this terminal-only mode.
+Step 1 can skip existing
 reports with `--skip-existing`.
+
+Choose the primitives that run grasp-loss checks in `config/detector_primitives.json`:
+
+```json
+{"slip": ["transport", "release", "place"]}
+```
+
+`slip` is the grasp-loss detector. The available primitives are `move`, `grasp`,
+`transport`, `place`, `release`, and `push`. The config assigns this detector when
+generating, reopening, or running a BT, including previously saved trees. An empty
+list disables its checks; a stage without a primitive does not receive it.
+Detectors absent from this config retain their normal BT selections. Configured
+assignments take precedence over saved per-stage detector selections. The slip
+detector still collects its grip baseline during grasping, and a commanded
+gripper opening ends the grasp-loss check even in a release stage.
 
 ### Condition-rule catalogue
 
-Before generating behavior trees, customize and run
-`src/aha_publish/behavior_trees/condition_rule_generator.py`:
+To customize the shared rules before generating behavior trees, edit the inputs
+and run `src/aha_publish/behavior_trees/condition_rule_generator.py`:
 
 1. Edit the generator's `PRIMITIVE_DEFINITIONS`, `ACTION_SEQUENCE`, and
    `SYSTEM_PROMPT` if your primitive semantics or rule-generation instructions
    need to change.
-2. Save your authored taxonomy as `config/condition_taxonomy_input.json`.
-   This input is not bundled in the release. Edit its categories and conditions,
+2. Edit the bundled `config/condition_taxonomy_input.json`.
+   Customize its categories and conditions,
    including `failure`, `predicate_template`, optional `predicate_meaning`,
    `occurrence`, and `stage_rule` to define what should be checked and when.
 3. Activate the local environment, set `OPENAI_API_KEY`, validate the input,
@@ -220,15 +315,31 @@ python src/aha_publish/behavior_trees/condition_rule_generator.py \
 python 03_behavior_trees/main.py --task basketball_in_hoop
 ```
 
-The generator writes `generated_condition_rules.json`,
-`generated_condition_rules.csv`, and `generated_condition_rules.txt` beside its
-script in `src/aha_publish/behavior_trees/`. Step 3 reads that JSON automatically.
-Generation replaces these files; edits to the output JSON will be overwritten
+The generator writes `generated_condition_rules.json` beside its script in
+`src/aha_publish/behavior_trees/`. Step 3 reads that JSON automatically.
+Generation replaces this file; edits to the output JSON will be overwritten
 the next time the generator runs.
+
+The BT generator passes the full task description to the model. Existing failure
+links retain their supplied names. When a saved condition lacks a failure link,
+the loader matches its predicate against this catalogue; unmatched conditions
+remain unlinked. Legacy failure-name aliases and keyword guessing are not used.
 
 The catalogue is shared across tasks, so regenerate it when the taxonomy or
 generator changes. `run_pipeline.py` uses the existing catalogue and does not
 run the condition-rule generator automatically.
+
+### Runtime condition guidance and scoring labels
+
+`config/condition_definitions.json` supplies the predicate definitions and visual
+guidance used for runtime VLM condition checks. Edit it to change how the auditor
+interprets a condition. It is separate from the catalogue used to generate BTs
+and from `config/detector_primitives.json`, which assigns detectors to primitives.
+
+`config/condition_failure_mapping.json` documents how failed conditions map to
+scoring labels. It is a reference file; the scoring implementation in
+`src/aha_publish/scoring/make_detection_samples.py` applies those rules. Editing
+the reference JSON alone does not change scoring behavior.
 
 ## Straightforward threshold calculation
 
@@ -241,7 +352,7 @@ Edit **`config/thresholds.json`**, then run:
 # First time: collect clean telemetry, compute thresholds, save runtime settings.
 python calibration/main.py all --task basketball_in_hoop --episodes 10
 
-# Separate collection, if desired. This resumes completed task baselines.
+# Separate collection, if desired. This resumes completed clean telemetry.
 python calibration/main.py collect --task basketball_in_hoop --episodes 10
 
 # Replace an existing clean baseline with fresh simulation episodes.
@@ -260,50 +371,56 @@ orientations radians, grip forces newtons, and joint torques newton-meters.
 `grip_ceiling: null` means no ceiling. Invalid settings, missing telemetry, and
 empty episodes produce an error rather than a successful calibration.
 
+Use `calibration/main.py` for the shared calibration workflow. `collect` saves
+clean pose/grip telemetry and De Luca residual maxima.
+`compute` produces arrival and grip baselines, De Luca thresholds, reports, and
+runtime manifests. `all` performs both actions. Calibration supports the default
+arrival checks and collision method 3; standalone detector evaluation, drift
+tuning, proportional/runup statistics, and collision methods 1 and 2 have been
+removed. Custom threshold configs must use the current `config/thresholds.json`
+schema.
+
 | Detector | Calculation retained from the existing implementation |
 | --- | --- |
 | Transition | Arrival threshold is the larger of the floor and scaled median clean arrival error, per waypoint |
 | Orientation | Arrival threshold is the larger of the floor and scaled maximum clean arrival error, per waypoint |
-| Collision, method 3 — De Luca (default) | Per-joint thresholds: max(residual floor, clean maximum absolute residual) × joint multiplier |
-| Collision, method 1 | Per-waypoint proportional torque-rise gates, based on clean maximum rise plus configured margins |
-| Collision, method 2 | Per-task torque thresholds: mean + k × standard deviation, optionally bounded below by maximum + standard deviation; statistics use medians across episodes |
+| Collision — De Luca (method 3) | Per-joint thresholds: max(residual floor, clean maximum absolute residual) × joint multiplier |
 | Slip | Held-force threshold: mean − k × standard deviation, bounded by floor and optional ceiling; statistics average the filtered per-episode statistics |
-| Freezing | Baselines come from the collection step's velocity telemetry; offline `compute` preserves them |
 
-Pose runup and proportional thresholds are also exported for compatibility with
-the existing detectors. The batch evaluation uses arrival checks. Repeated
-occurrences of a waypoint retain separate signal histories during calibration.
+Repeated occurrences of a waypoint retain separate arrival histories during
+calibration. Pose baselines contain the statistics used by the arrival checks.
 
-Each task gets `calibration/manifests/<task>.json` with its parameters and runtime
-settings. Step 4 loads this manifest automatically, including the collision and
-slip settings; you do not need to manually translate tuning parameters into
+Calibration artifacts below are relative to `AHA_CALIBRATION_ROOT`, which defaults
+to `outputs/calibration/`. Each task gets `manifests/<task>.json` with its parameters
+and runtime settings. Step 4 loads this manifest automatically, including the
+collision and slip settings; you do not need to manually translate tuning parameters into
 separate environment variables. Tasks with different runtime settings must be
 run separately or recalibrated together.
 
-The default collision detector is the **De Luca generalized-momentum observer
+The collision detector is the **De Luca generalized-momentum observer
 (method 3)**. The clean collector saves `clean_data/<task>/epN.residual.json`
 alongside each episode CSV. These files store the seven maximum absolute joint
 residuals after the warmup and settling frames, plus the observer parameters.
 Offline `compute` takes the maximum for each joint across the clean episodes and
-writes `residual_stats/<task>_residual_stats.json` (with `_v2` for observer version
-2). The active method-3 thresholds are listed in
-`threshold_report/<task>_collision_residual.csv`. The separate `collision.csv`
-contains method-2 torque thresholds; it is not the De Luca threshold report.
+writes `residual_stats/<task>_residual_stats.json`. The active method-3 thresholds
+are listed in `threshold_report/<task>_collision_residual.csv`.
 
 All De Luca tuning values are in the `collision` section of
 **`config/thresholds.json`**:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `method` | `3` | Selects De Luca |
 | `residual_joint_multipliers` | `[5.0, 1.1, 1.1, 1.1, 1.1, 2.0, 1.1]` | Threshold multipliers for joints 1–7 (indices 0–6), in order |
 | `residual_floor` | `3.0` Nm | Minimum baseline before applying each joint multiplier |
 | `residual_warmup_multiplier` | `1.1` | Scalar warmup fallback only; not applied to calibrated joint thresholds |
 | `momentum_gain` | `25.0` s⁻¹ | Observer gain |
 | `time_step` | `0.05` s | Observer integration step; must match the simulation step |
-| `momentum_version` | `1` | Existing observer update; `2` selects the backward-Euler variant |
+| `momentum_version` | `1` | De Luca observer update; this is the supported version |
 | `residual_settle_steps` | `3` | Observer startup frames excluded from calibration |
 | `residual_min_joints` | `1` | Number of joints that must exceed their thresholds simultaneously |
+
+There is no collision-method selector; the runner always uses De Luca.
+VLM confirmation camera and model defaults are in `config/detector_vlm.json`.
 
 For each joint `i`, the calibrated threshold is:
 
@@ -314,44 +431,37 @@ threshold[i] = max(residual_floor, clean_max_abs_residual[i])
 
 For example, a 2 Nm clean residual with floor 3 Nm and multiplier 5 has a 15 Nm
 threshold. Increasing a multiplier raises that joint's threshold and makes it
-less sensitive. `torque_k` and `max_floor` configure method 2; `baseline_window`,
-`rise_fraction`, `gate_margin`, and `gate_std_k` configure method 1.
+less sensitive.
 
 After changing joint multipliers or the residual floor, rerun `calibration/main.py
 compute --task TASK` and then step 4 with `--redo`. The generated manifest carries
-the settings into the runner automatically. Changing the observer version, gain,
+the settings into the runner automatically. Changing the observer gain,
 integration step, or settle count requires fresh collection with
 `calibration/main.py all --task TASK --force`. Old CSV-only calibrations also need
-fresh collection: they do not contain De Luca residuals. Existing manifests keep
-their recorded method until calibration is rerun.
+fresh collection: they do not contain De Luca residuals. Manifests recorded with
+collision methods 1 or 2 must be replaced by method-3 calibration before running.
 
-If imported raw CSVs lack the separate freezing baseline, the manifest marks
-freezing as uncalibrated and the existing
-runtime fallback applies. Tasks with no held-force samples likewise retain the
-slip detector's fallback. Inspect `calibration/threshold_report/` and the manifests
-before interpreting results.
+Tasks with no held-force samples retain the slip detector's fallback.
+Inspect `threshold_report/` and the manifests before interpreting results.
 
 ## Scoring policy
 
-The existing checkpoint label mapping and metric formulas are preserved:
+Scoring reads checkpoint verdicts and detector confirmations from each case's
+`run.log`, alongside its detector telemetry. The checkpoint label mapping and
+metric formulas are preserved:
 
 - `A1`: condition VLM; `A2`: raw detectors; `A3`: detectors with VLM confirmation;
   `A4`: condition checks combined with confirmed detector results.
-- Optional `B2` consumes already assessed GPT-baseline grids. Pass
-  `--baseline-root /path/to/out_grids --methods B2 A4`; baseline generation is
-  outside this release's five-stage workflow.
 - The default scoring window ends at the injection waypoint. `--window full`
   includes subsequent checkpoints. `--unit episode` scores episodes instead.
-- Missing method results are excluded for that method. `--common-episodes`
-  restricts comparisons to shared coverage. Uncertain baseline verdicts count
+- Missing method results are excluded for that method. Uncertain verdicts count
   as success by default; `--uncertain-as failure` changes this.
-- The inherited extraction excludes injections that could not manifest. It folds
-  freezing labels into success and `ObjectNotFound` into wrong-sequence labels.
+- The inherited extraction excludes injections that could not manifest. It maps
+  `ObjectNotFound` into wrong-sequence labels.
   The batch runner excludes grasp-injection cases. These are benchmark-specific
   choices, not a general evaluation of all failures supported by failgen.
 
-Frame sidecars provide latency when available. `--matrix-image` additionally
-writes confusion figures. No experiment data or published performance claims
+Frame sidecars provide latency when available. No experiment data or published performance claims
 are bundled with this folder.
 
 ## Layout
@@ -361,7 +471,6 @@ AHA_publish_version/
 ├── README.md
 ├── LICENSE
 ├── requirements.txt
-├── requirements-claude.txt
 ├── requirements-simulator.txt
 ├── scripts/                 # local Conda setup, activation, dependency checks
 ├── .env.example
@@ -372,7 +481,8 @@ AHA_publish_version/
 ├── 04_running/main.py
 ├── 05_scoring/main.py
 ├── calibration/main.py
-├── config/thresholds.json
+├── config/                  # thresholds, taxonomy, VLM guidance, scoring reference
+├── patches/                 # changes to the pinned simulator backends
 ├── external/                # local simulator and backend copies; ignored by Git
 ├── .conda/aha-publish/       # independent Python environment; ignored by Git
 ├── src/aha_publish/
@@ -380,16 +490,19 @@ AHA_publish_version/
 │   ├── commands.py           # command execution and validation
 │   ├── ttm/                  # scene and waypoint inspection
 │   ├── descriptions/         # image evidence, prompts, providers
-│   ├── behavior_trees/       # generation, cleanup, condition rules
+│   ├── behavior_trees/       # generation, review, condition rules
 │   ├── running/              # simulation, BT execution, live monitors
 │   ├── calibration/          # clean telemetry and threshold calculation
 │   ├── scoring/              # sample extraction and metrics
-│   ├── detectors/            # collision, slip, orientation, transition, freezing
-│   └── common/               # reference geometry and shared helpers
+│   ├── detectors/            # collision, slip, orientation, transition
+│   └── simulation/           # RLBench tasks, failure options, and waypoint references
 ├── tests/
-├── docs/source_map.json      # original-to-publication module mapping
 └── outputs/                 # created when stages run; ignored by Git
 ```
+
+Setup and workflow instructions needed by this release are contained in this
+README. Research archives and the original-to-publication module mapping are
+maintained separately and are not required to run the release.
 
 Output folders are `ttm_context/`, `waypoint_screenshots/`, `descriptions/`,
 `gripper_sequences/`, `behavior_trees/`, `calibration/`, `runs/`, and `scores/`.

@@ -2,24 +2,18 @@
 
 from aha_publish import paths
 
-import json
-
-from .cleanup import (
-    iter_failure_definition_entries,
-    task_context_for_prompt,
-)
+from .failure_definitions import iter_failure_definition_entries
 
 
 def build_user_message(
     task_context: str,
     failure_definitions: dict,
     reviewer_guidance: str = "",
-    task_name: str = "",
 ) -> str:
     """Build the task-specific message for the LLM.
 
     All waypoint classification and condition generation are performed by the
-    LLM according to the system prompt.
+    LLM according to the system prompt. The task context is embedded verbatim.
 
     This function does not:
     - classify tasks by object count;
@@ -27,15 +21,7 @@ def build_user_message(
     - derive gripper predicates;
     - assign preconditions or postconditions;
     - select predicates for specific waypoint types.
-
-    ``task_name`` is retained only for compatibility with existing callers.
     """
-
-    del task_name
-
-    cleaned_task_context = task_context_for_prompt(
-        task_context
-    )
 
     # Names only. Every statement about WHEN a condition applies — the primitive
     # it attaches to, precondition vs postcondition, how often — belongs to the
@@ -57,7 +43,7 @@ def build_user_message(
 
     return f"""TASK DESCRIPTION
 
-{cleaned_task_context}
+{task_context}
 
 VALID FAILURE NAMES
 

@@ -1,0 +1,8 @@
+{
+  "model": "gpt-5.6-sol",
+  "cameras": [
+    "side_rgb",
+    "wrist_rgb",
+    "front_rgb"
+  ]
+}

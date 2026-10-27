@@ -11,26 +11,27 @@ and the program merges the two halves and derives every field that follows
 mechanically from the others (the applicable-primitive list and the
 scalar/list collapsing of uniform timing).
 
-Every path defaults to a file sitting next to this script. From the repository
-root, supply the authored taxonomy input (not bundled in this release):
+The authored taxonomy is read from config/condition_taxonomy_input.json and the
+JSON catalogue is written next to this script, so the script runs with no arguments
+from any working directory:
+
+    python src/aha_publish/behavior_trees/condition_rule_generator.py
+
+Check an edited taxonomy without spending an API call:
+
+    python src/aha_publish/behavior_trees/condition_rule_generator.py --validate-only
+
+Override any path when needed:
 
     python src/aha_publish/behavior_trees/condition_rule_generator.py \
-        --input /path/to/condition_taxonomy_input.example.json
-
-Override any of them when needed:
-
-    python src/aha_publish/behavior_trees/condition_rule_generator.py \
-        --input condition_taxonomy_input.example.json \
+        --input config/condition_taxonomy_input.json \
         --output-json generated_condition_rules.json \
-        --output-csv generated_condition_rules.csv \
-        --output-text generated_condition_rules.txt \
-        --model gpt-5.4
+        --model gpt-5.6-sol
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import sys
@@ -44,12 +45,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 
 # Defaults resolve next to this file, so the script runs with no arguments from
-# any working directory (including an IDE "Run" button).
+# any working directory (including an IDE "Run" button). The authored taxonomy is
+# the one file a user edits, so it sits in config/ beside thresholds.json rather
+# than among the sources.
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_INPUT = SCRIPT_DIR / "condition_taxonomy_input.example.json"
+PROJECT_ROOT = SCRIPT_DIR.parents[2]
+DEFAULT_INPUT = PROJECT_ROOT / "config/condition_taxonomy_input.json"
 DEFAULT_OUTPUT_JSON = SCRIPT_DIR / "generated_condition_rules.json"
-DEFAULT_OUTPUT_CSV = SCRIPT_DIR / "generated_condition_rules.csv"
-DEFAULT_OUTPUT_TEXT = SCRIPT_DIR / "generated_condition_rules.txt"
 
 
 PRIMITIVE_DEFINITIONS = r"""
@@ -439,10 +441,6 @@ def load_input(path: Path) -> TaxonomyInput:
         raise ValueError(f"input validation failed:\n{exc}") from exc
 
 
-def _as_list(value: Any) -> list[Any]:
-    return list(value) if isinstance(value, list) else [value]
-
-
 def derivation_errors(
     item: RuleDerivation,
     condition: ConditionSpecification,
@@ -691,128 +689,6 @@ def generate_derivations(
 
 
 # ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
-
-CSV_COLUMNS = (
-    "category",
-    "source_condition_id",
-    "failure",
-    "predicate_template",
-    "predicate_meaning",
-    "check_type",
-    "applicable_primitives",
-    "per_primitive",
-    "occurrence",
-    "generation_rule",
-    "prohibitions",
-)
-
-
-def _join(values: list[Any]) -> str:
-    return "; ".join(
-        value.value if isinstance(value, Enum) else str(value) for value in values
-    )
-
-
-def _per_primitive_cell(timing: WaypointTiming) -> str:
-    if not timing.per_primitive:
-        return ""
-    return " | ".join(
-        f"{entry.primitive.value}: {', '.join(c.value for c in entry.check_type)}"
-        for entry in timing.per_primitive
-    )
-
-
-def render_csv(generated: GeneratedTaxonomy, path: Path) -> None:
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
-        writer.writeheader()
-        for category_result in generated.categories:
-            for rule in category_result.rules:
-                timing = rule.timing
-                writer.writerow(
-                    {
-                        "category": rule.category,
-                        "source_condition_id": rule.source_condition_id,
-                        "failure": rule.failure,
-                        "predicate_template": rule.predicate_template,
-                        "predicate_meaning": rule.predicate_meaning or "",
-                        "check_type": _join(_as_list(timing.check_type)),
-                        "applicable_primitives": _join(
-                            timing.applicable_primitives
-                        ),
-                        "per_primitive": _per_primitive_cell(timing),
-                        "occurrence": timing.occurrence.value,
-                        "generation_rule": rule.generation_rule,
-                        "prohibitions": " | ".join(rule.prohibitions),
-                    }
-                )
-
-
-def render_text(generated: GeneratedTaxonomy) -> str:
-    lines = [
-        f"# {generated.taxonomy_name}",
-        "",
-        PRIMITIVE_DEFINITIONS,
-        "",
-        ACTION_SEQUENCE,
-        "",
-        "=== GENERATED VERIFICATION RULES ===",
-        "",
-    ]
-
-    for result in generated.categories:
-        lines.extend(
-            [
-                f"## {result.category}",
-                "",
-                result.category_explanation.strip(),
-                "",
-            ]
-        )
-
-        for rule in result.rules:
-            timing = rule.timing
-            primitives = (
-                _join(timing.applicable_primitives)
-                if timing.applicable_primitives
-                else "task-global"
-            )
-            lines.extend(
-                [
-                    f"### {rule.failure}",
-                    "",
-                    f"* Source: `{rule.source_condition_id}`",
-                    f"* Predicate: `{rule.predicate_template}`",
-                ]
-            )
-            if rule.predicate_meaning:
-                lines.append(f"* Predicate meaning: {rule.predicate_meaning}")
-            lines.extend(
-                [
-                    f"* Check type: `{_join(_as_list(timing.check_type))}`",
-                    f"* Applicable primitives: {primitives}",
-                    f"* Occurrence: `{timing.occurrence.value}`",
-                    f"* Generation rule: {rule.generation_rule}",
-                ]
-            )
-            if timing.per_primitive:
-                lines.append("* Per-primitive timing:")
-                for entry in timing.per_primitive:
-                    entry_checks = ", ".join(c.value for c in entry.check_type)
-                    lines.append(
-                        f"  - {entry.primitive.value}: {entry_checks}"
-                    )
-            if rule.prohibitions:
-                lines.append("* Prohibitions:")
-                lines.extend(f"  - {item}" for item in rule.prohibitions)
-            lines.append("")
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -832,18 +708,8 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_OUTPUT_JSON,
     )
     parser.add_argument(
-        "--output-csv",
-        type=Path,
-        default=DEFAULT_OUTPUT_CSV,
-    )
-    parser.add_argument(
-        "--output-text",
-        type=Path,
-        default=DEFAULT_OUTPUT_TEXT,
-    )
-    parser.add_argument(
         "--model",
-        default=os.getenv("OPENAI_MODEL", "gpt-5.4"),
+        default=os.getenv("OPENAI_MODEL", "gpt-5.6-sol"),
     )
     parser.add_argument("--max-attempts", type=int, default=2)
     parser.add_argument(
@@ -924,20 +790,15 @@ def main() -> int:
         print(f"ERROR: generation failed: {exc}", file=sys.stderr)
         return 1
 
-    for path in (args.output_json, args.output_csv, args.output_text):
-        path.parent.mkdir(parents=True, exist_ok=True)
+    args.output_json.parent.mkdir(parents=True, exist_ok=True)
 
     args.output_json.write_text(
         json.dumps(generated.model_dump(mode="json"), indent=2, ensure_ascii=False)
         + "\n",
         encoding="utf-8",
     )
-    render_csv(generated, args.output_csv)
-    args.output_text.write_text(render_text(generated), encoding="utf-8")
 
     print(f"Structured rules: {args.output_json}")
-    print(f"Spreadsheet rules: {args.output_csv}")
-    print(f"Prompt-ready rules: {args.output_text}")
     return 0
 
 

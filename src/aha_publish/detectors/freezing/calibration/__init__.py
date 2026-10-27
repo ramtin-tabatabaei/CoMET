@@ -1,1 +1,0 @@
-"""AHA publication workflow components."""

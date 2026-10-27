@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from aha_publish import paths
 from aha_publish.commands import entry, environment, parser, require, run
 from aha_publish.calibration.settings import DEFAULT_SETTINGS, compute_arguments, detector_environment, load_settings
-from aha_publish.common.tasks import validate_task
+from aha_publish.simulation.tasks import validate_task
 
 
 def main():
@@ -42,8 +42,9 @@ def main():
             require(paths.TTM_CONTEXT_DIR / f'{task}.llm_context.json', args.dry_run)
             require(paths.CONFIGS_DIR / f'{task}.yaml', args.dry_run)
             require(paths.RLBENCH_ROOT / 'rlbench/task_ttms' / f'{task}.ttm', args.dry_run)
-        options = ['--episodes', args.episodes, '--workers', args.workers, '--out-root', paths.CALIBRATION_DIR,
-                   '--force' if args.force else '--skip-completed']
+        options = ['--episodes', args.episodes, '--workers', args.workers, '--out-root', paths.CALIBRATION_DIR]
+        if args.force:
+            options.append('--force')
         for task in tasks:
             options += ['--task', task]
         if args.force and not args.dry_run:
@@ -54,9 +55,8 @@ def main():
         from aha_publish.calibration.artifacts import validate_raw
         for task in tasks:
             validate_raw(raw, task, args.episodes if args.action in ('all', 'collect') else 1)
-            if config['collision']['method'] == 3:
-                from aha_publish.calibration.residuals import expected_parameters, load_envelopes
-                load_envelopes(raw, task, expected_parameters(config['collision']))
+            from aha_publish.calibration.residuals import expected_parameters, load_envelopes
+            load_envelopes(raw, task, expected_parameters(config['collision']))
     if args.action in ('compute', 'all'):
         options = ['--out-root', paths.CALIBRATION_DIR, '--raw-dir', raw, *compute_arguments(config)]
         for task in tasks:

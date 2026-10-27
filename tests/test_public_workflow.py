@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 # These tests copy portable source, not machine-specific environments or assets.
 SOURCE_COPY_IGNORE = shutil.ignore_patterns(
     '__pycache__', 'outputs', '.git', '.conda', '.cache', '.venv', 'external',
+    '.env', '.env.*', 'api-code.txt', 'api_key*.txt',
 )
 
 
@@ -45,7 +46,7 @@ class PublicWorkflowTests(unittest.TestCase):
     def raw_episodes(self):
         folder = self.work / 'raw/example_task'
         folder.mkdir(parents=True)
-        columns = ['waypoint', 'local_step', 'path_done', 'distance_m', 'angle_rad', 'torque_norm', 'torque_delta', 'grip_force', 'grip_force_drop']
+        columns = ['waypoint', 'local_step', 'path_done', 'distance_m', 'angle_rad', 'grip_force', 'grip_force_drop']
         # Two occurrences of waypoint 0 must be treated as independent segments.
         for episode in range(2):
             with (folder / f'ep{episode}.csv').open('w', newline='') as handle:
@@ -53,8 +54,15 @@ class PublicWorkflowTests(unittest.TestCase):
                 writer.writerow(columns)
                 for i in range(32):
                     writer.writerow([0, i % 16, 0, 0.04 if i % 16 else 0.1,
-                                     0.2, 10 + i % 3, 1 + i % 2, 4 + i % 3, i % 2])
+                                     0.2, 4 + i % 3, i % 2])
         return folder.parent
+
+    def residual_sidecars(self, raw, collision):
+        from aha_publish.calibration.residuals import expected_parameters
+        for episode in range(2):
+            data = dict(expected_parameters(collision), task='example_task', episode=episode,
+                        per_joint_max=[float(j + episode) for j in range(1, 8)])
+            (raw / 'example_task' / f'ep{episode}.residual.json').write_text(json.dumps(data))
 
     def test_help_and_dry_run_work_without_simulator_or_outputs(self):
         stages = ['01_ttm_context', '02_descriptions', '03_behavior_trees', '04_running', '05_scoring', 'calibration']
@@ -64,14 +72,29 @@ class PublicWorkflowTests(unittest.TestCase):
             self.command(stage + '/main.py', *args, '--dry-run')
         self.assertFalse((self.work / 'outputs').exists())
 
+    def test_merged_runner_commands_have_offline_help(self):
+        for mode, flag in (('single', '--mode'), ('batch', '--workers')):
+            with self.subTest(mode=mode):
+                result = self.command('src/aha_publish/running/bt_runner.py', mode, '--help')
+                self.assertIn('--task', result.stdout)
+                self.assertIn(flag, result.stdout)
+        self.assertFalse((self.work / 'outputs').exists())
+
     def test_missing_input_fails_before_running(self):
         result = self.command('03_behavior_trees/main.py', '--task', 'example_task', ok=False)
         self.assertIn('Missing input:', result.stderr)
         self.assertFalse((self.work / 'outputs').exists())
 
+    def test_generation_entry_points_reject_unsupported_providers(self):
+        for script in ('run_pipeline.py', '02_descriptions/main.py', '03_behavior_trees/main.py'):
+            with self.subTest(script=script):
+                result = self.command(script, '--task', 'example_task', '--provider', 'unsupported', '--dry-run', ok=False)
+                self.assertIn('invalid choice', result.stderr)
+        self.assertFalse((self.work / 'outputs').exists())
+
     def test_invalid_config_writes_nothing(self):
         config = json.loads((ROOT / 'config/thresholds.json').read_text())
-        config['transition']['prop_window'] = 0
+        config['transition']['arrival_scale'] = 0
         path = self.work / 'bad.json'
         path.write_text(json.dumps(config))
         self.command('calibration/main.py', 'compute', '--task', 'example_task', '--config', path, ok=False)
@@ -102,10 +125,10 @@ class PublicWorkflowTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('{}')
         config = json.loads((ROOT / 'config/thresholds.json').read_text())
-        config['collision']['method'] = 2
         settings = self.work / 'settings.json'
         settings.write_text(json.dumps(config))
         raw = self.raw_episodes()
+        self.residual_sidecars(raw, config['collision'])
 
         def collect(module, *args):
             self.assertEqual(module, 'calibration.calibrate_all_clean')
@@ -131,8 +154,10 @@ class PublicWorkflowTests(unittest.TestCase):
     def test_calibration_reports_match_live_detectors_with_custom_settings(self):
         raw = self.raw_episodes()
         config = json.loads((ROOT / 'config/thresholds.json').read_text())
-        config['collision'].update(method=2, torque_k=5.0, max_floor=False)
+        config['collision'].update(residual_floor=5.0, residual_joint_multipliers=[2.0] * 7)
         config['slip'].update(grip_k=1.0, grip_floor=0.4, min_force=4.1)
+        config['orientation']['arrival_scale'] = 2.0
+        self.residual_sidecars(raw, config['collision'])
         settings = self.work / 'settings.json'
         settings.write_text(json.dumps(config))
         self.command('calibration/main.py', 'compute', '--task', 'example_task', '--raw-dir', raw, '--config', settings)
@@ -143,12 +168,11 @@ class PublicWorkflowTests(unittest.TestCase):
         env = dict(self.env, **manifest['runtime_environment'])
         code = '''import json
 from aha_publish.detectors.slip.detector import default_detector_settings, apply_task_grip_force_stats_thresholds
-from aha_publish.detectors.collision.detector import default_detector_settings as collision_settings, apply_task_torque_stats_thresholds
+from aha_publish.detectors.collision.detector import load_residual_stats, residual_threshold_vector
 slip = apply_task_grip_force_stats_thresholds(default_detector_settings(), 'example_task')
-collision = apply_task_torque_stats_thresholds(collision_settings(), 'example_task')
 assert slip['task_grip_force_stats_thresholds']['enabled']
-assert collision['task_torque_stats_thresholds']['enabled']
-print(json.dumps({'slip': slip['threshold_overrides'], 'collision': collision['threshold_overrides']}))
+collision = residual_threshold_vector(load_residual_stats('example_task')).tolist()
+print(json.dumps({'slip': slip['threshold_overrides'], 'collision': collision}))
 '''
         result = subprocess.run([sys.executable, '-c', code], env=env, cwd=self.work, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -156,26 +180,33 @@ print(json.dumps({'slip': slip['threshold_overrides'], 'collision': collision['t
         with (calibration / 'threshold_report/slip.csv').open() as handle:
             slip = next(csv.DictReader(handle))
         self.assertAlmostEqual(live['slip']['grip_force_threshold'], float(slip['threshold']), places=4)
-        with (calibration / 'threshold_report/collision.csv').open() as handle:
-            for row in csv.DictReader(handle):
-                self.assertAlmostEqual(live['collision'][{'torque_norm': 'tq_norm_free', 'torque_delta': 'tq_delta_free'}[row['metric']]], float(row['threshold']), places=4)
+        with (calibration / 'threshold_report/example_task_collision_residual.csv').open() as handle:
+            self.assertEqual(live['collision'], [float(row['threshold_nm']) for row in csv.DictReader(handle)])
+        for name in ('transition', 'orientation'):
+            baseline = json.loads((calibration / f'{name}_arrival_stats/example_task.json').read_text())
+            self.assertEqual(set(baseline), {'task', 'signal', 'n_clean_episodes', 'arrival_stats_by_waypoint',
+                                             'arrival_floor', 'arrival_scale', 'source'})
+        orientation = json.loads((calibration / 'orientation_arrival_stats/example_task.json').read_text())
+        self.assertEqual(orientation['arrival_stats_by_waypoint']['0']['threshold'], 0.4)
+        self.assertFalse((calibration / 'torque_stats').exists())
+        self.assertEqual({path.name for path in (calibration / 'threshold_report').glob('*.csv')},
+                         {'transition.csv', 'orientation.csv', 'slip.csv', 'example_task_collision_residual.csv'})
         # Runtime automatically applies the manifest even when shell defaults differ.
-        code = "from aha_publish.calibration.settings import runtime_environment; e=runtime_environment({}, ['example_task']); assert e['AHA_COLLISION_METHOD']=='2' and e['AHA_SLIP_GRIP_K']=='1.0'"
+        code = "from aha_publish.calibration.settings import runtime_environment; e=runtime_environment({}, ['example_task']); assert 'AHA_COLLISION_METHOD' not in e and e['AHA_SLIP_GRIP_K']=='1.0'"
         result = subprocess.run([sys.executable, '-c', code], env=self.env, cwd=self.work, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_repeat_waypoints_do_not_join_signal_histories(self):
-        from aha_publish.calibration.compute_thresholds import per_waypoint_arrays
+        from aha_publish.calibration.compute_thresholds import per_waypoint_arrivals
         episode = [{'waypoint': '0', 'local_step': str(i), 'path_done': '0', 'signal': str(v)} for i, v in [(0, 100), (1, 1), (0, 50), (1, 2)]]
-        arrival, runup, _ = per_waypoint_arrays([episode], 'signal', 5, 0.01)
+        arrival = per_waypoint_arrivals([episode], 'signal')
         self.assertEqual(arrival[0], [2.0])
-        self.assertEqual(runup[0], [0.0])
 
     def test_de_luca_default_and_live_thresholds_match_offline_report(self):
         from aha_publish.calibration.residuals import expected_parameters
         config = json.loads((ROOT / 'config/thresholds.json').read_text())
         c = config['collision']
-        self.assertEqual(c['method'], 3)
+        self.assertNotIn('method', c)
         self.assertEqual(c['residual_joint_multipliers'], [5.0, 1.1, 1.1, 1.1, 1.1, 2.0, 1.1])
         raw = self.raw_episodes()
         for episode in range(2):
@@ -189,11 +220,10 @@ print(json.dumps({'slip': slip['threshold_overrides'], 'collision': collision['t
         env = dict(self.env, **manifest['runtime_environment'])
         code = '''import json
 from aha_publish.detectors.collision import detector as d
-from aha_publish.running import detector_vlm_config as config
+from aha_publish.running import run_support
 from aha_publish.calibration.calibrate_all_clean import CD
 assert CD._panda_dyn is not None
-assert config.apply_detector_vlm_env({})['AHA_COLLISION_METHOD'] == '3'
-assert d.DEFAULT_COLLISION_METHOD == '3'
+assert 'AHA_COLLISION_METHOD' not in run_support.apply_detector_vlm_env({})
 stats = d.load_residual_stats('example_task')
 assert stats is not None
 print(json.dumps(d.residual_threshold_vector(stats).tolist()))
@@ -249,9 +279,9 @@ print(json.dumps(d.residual_threshold_vector(stats).tolist()))
         sample = self.work / 'samples.csv'
         with sample.open('w', newline='') as handle:
             writer = csv.writer(handle)
-            writer.writerow(['task', 'failure_condition', 'waypoint', 'gt', 'B2', 'A1', 'A2', 'A3', 'A4'])
-            writer.writerow(['example_task', 'clean', 0, 'success', '', 'success', 'success', 'success', 'success'])
-            writer.writerow(['example_task', 'collision_wp1', 1, 'failure,collision', '', 'success', 'failure,collision', 'failure,collision', 'failure,collision'])
+            writer.writerow(['task', 'failure_condition', 'waypoint', 'gt', 'A1', 'A2', 'A3', 'A4'])
+            writer.writerow(['example_task', 'clean', 0, 'success', 'success', 'success', 'success', 'success'])
+            writer.writerow(['example_task', 'collision_wp1', 1, 'failure,collision', 'success', 'failure,collision', 'failure,collision', 'failure,collision'])
         self.command('05_scoring/main.py', '--samples', sample, '--methods', 'A4')
         files = list((self.work / 'outputs/scores').glob('*.csv'))
         self.assertTrue(files)
@@ -286,6 +316,7 @@ print(json.dumps(d.residual_threshold_vector(stats).tolist()))
         (legacy / 'legacy_module_marker.py').write_text('raise AssertionError("old checkout imported")\n')
         probe = destination / 'src/aha_publish/_isolation_probe.py'
         probe.write_text('''import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -303,17 +334,18 @@ sys.addaudithook(audit)
 assert Path.cwd() == paths.PROJECT_ROOT
 assert importlib.util.find_spec('legacy_module_marker') is None
 from aha_publish.descriptions.config import DEFAULT_GRIPPER_SEQUENCE_DIR
-from aha_publish.descriptions.gripper_ground_truth import DESC_DIR
-from aha_publish.behavior_trees.logic import main
+from aha_publish.behavior_trees.cli import main
 from aha_publish.detectors.slip.detector import DEFAULT_GRIP_FORCE_STATS_PATH
 from aha_publish.running.live_detectors.orientation import ARRIVAL_STATS_DIR
-from aha_publish.common.waypoint_chain import DEFAULT_CHAIN_DIR
+from aha_publish.running import run_support
+from aha_publish.simulation.waypoint_chain import DEFAULT_CHAIN_DIR
 assert DEFAULT_GRIPPER_SEQUENCE_DIR == paths.GRIPPER_DIR
-assert DESC_DIR == paths.DESCRIPTION_DIR
 assert Path(DEFAULT_CHAIN_DIR) == paths.TTM_CONTEXT_DIR
 assert Path(os.environ['AHA_WP_CHAIN_DIR']) == paths.TTM_CONTEXT_DIR
 assert Path(DEFAULT_GRIP_FORCE_STATS_PATH).is_relative_to(paths.CALIBRATION_DIR)
 assert ARRIVAL_STATS_DIR.is_relative_to(paths.CALIBRATION_DIR)
+camera_config = json.loads((paths.PROJECT_ROOT / 'config/detector_vlm.json').read_text())
+assert run_support.DEFAULT_DETECTOR_VLM_CAMERAS == ','.join(camera_config['cameras'])
 assert 'BT_TASK_CONTEXT_PATH' not in os.environ
 for name, module in list(sys.modules.items()):
     if name.startswith('aha_publish') and getattr(module, '__file__', None):
@@ -327,38 +359,34 @@ for name, module in list(sys.modules.items()):
                                 env=env, cwd=legacy, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_new_gripper_evidence_is_written_before_description_generation(self):
+    def test_description_generation_uses_the_captured_gripper_evidence(self):
         from aha_publish.descriptions import runner
         from aha_publish.descriptions.context_blocks import gripper_sequence_block
         sequence = self.work / 'new_outputs/gripper_sequences/example_task.json'
         description = self.work / 'new_outputs/descriptions/example_task.json'
         task_paths = SimpleNamespace(task_name='example_task', grid_image_path=self.work / 'grid.png',
                                      gripper_sequence_path=sequence, output_json_path=description)
-        args = SimpleNamespace(extract_gripper_sequence=True, include_gripper_sequence=True,
-                               add_held_object=True, dry_run=True)
+        args = SimpleNamespace(include_gripper_sequence=True, dry_run=True)
         capture = {'task': 'example_task', 'n_waypoints': 1, 'tip_travel_m': 0.2,
                    'waypoints': [{'index': 0, 'action': 'open', 'state_after': 'Open',
                                   'gripper_open_amount': 1.0, 'held_after': []}]}
+        sequence.parent.mkdir(parents=True, exist_ok=True)
+        sequence.write_text(json.dumps(capture))
+        generated = {'waypoints': [{'waypoint': 0, 'gripper_state': 'Closed', 'held_object': 'ball'}]}
         def generate(task, options, client):
             self.assertEqual(json.loads(sequence.read_text()), capture)
             self.assertIn('| wp0 | open | Open | 1.000 |', gripper_sequence_block(task, options))
-            return {'waypoints': [{'waypoint': 0, 'gripper_state': 'Closed', 'held_object': 'ball'}]}, runner.Usage()
+            return generated, runner.Usage()
         with mock.patch.object(runner, 'build_task_paths', return_value=task_paths), \
-             mock.patch('aha_publish.descriptions.extract_gripper_sequence.extract', return_value=capture), \
              mock.patch.object(runner, 'analyze_task', side_effect=generate):
             runner.run_one('example_task', args, None)
-        self.assertIsNone(json.loads(description.read_text())['waypoints'][0]['held_object'])
+        self.assertEqual(json.loads(description.read_text()), generated)
 
-    def test_failed_gripper_capture_stops_before_api_call(self):
-        from aha_publish.descriptions import runner
-        task_paths = SimpleNamespace(task_name='example_task', grid_image_path=self.work / 'grid.png',
-                                     gripper_sequence_path=self.work / 'sequence.json')
-        with mock.patch.object(runner, 'build_task_paths', return_value=task_paths), \
-             mock.patch('aha_publish.descriptions.extract_gripper_sequence.extract', side_effect=RuntimeError('capture failed')), \
-             mock.patch.object(runner, 'analyze_task') as analyze:
-            with self.assertRaisesRegex(RuntimeError, 'capture failed'):
-                runner.run_one('example_task', SimpleNamespace(extract_gripper_sequence=True), None)
-            analyze.assert_not_called()
+    def test_step_two_captures_gripper_evidence_before_generation(self):
+        result = self.command('02_descriptions/main.py', '--task', 'example_task', '--dry-run')
+        commands = result.stdout
+        self.assertLess(commands.index('descriptions.extract_gripper_sequence'),
+                        commands.index('aha_publish.descriptions.cli'))
 
     def test_missing_gripper_evidence_is_not_silently_ignored(self):
         from aha_publish.descriptions.context_blocks import gripper_sequence_block

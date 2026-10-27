@@ -51,7 +51,7 @@ CALIBRATION_ROOT = Path(os.getenv(
     'AHA_CALIBRATION_ROOT',
     str(paths.CALIBRATION_DIR),
 )).expanduser()
-VLM_TRACE_DIR = (paths.OUTPUT_DIR / 'vlm_traces')
+
 
 # --- Method-3 (De Luca generalized-momentum observer) residual context -------
 # The detector fires on the momentum-observer residual r (one value per joint,
@@ -95,7 +95,7 @@ INCLUDE_WAYPOINT_CONTEXT = os.getenv('AHA_VLM_WAYPOINT_CONTEXT', '1').strip() in
 
 DEFAULT_OPENAI_MODEL = os.getenv(
     'OPENAI_COLLISION_VLM_MODEL',
-    os.getenv('OPENAI_MODEL', 'gpt-5.4'),
+    os.getenv('OPENAI_MODEL', 'gpt-5.6-sol'),
 )
 
 SYSTEM_PROMPT = (
@@ -212,8 +212,7 @@ def _load_json(path):
 def _find_residual_stats_path(task_name, stats_dir=RESIDUAL_STATS_DIR):
     if not task_name:
         return None
-    suffix = '_v2' if os.getenv('AHA_COLLISION_MOMENTUM_VERSION', '1').strip() == '2' else ''
-    path = Path(stats_dir) / f'{task_name}_residual_stats{suffix}.json'
+    path = Path(stats_dir) / f'{task_name}_residual_stats.json'
     return path if path.exists() else None
 
 
@@ -396,53 +395,7 @@ def _waypoint_entry(data, waypoint_index):
     return None
 
 
-def load_waypoints_context(task_name=None, waypoint_index=None, description_path=None):
-    path = _find_waypoints_description_path(task_name, description_path)
-    if path is None:
-        return None
 
-    data = _load_json(path)
-    current_waypoint = _waypoint_entry(data, waypoint_index)
-    context = {
-        'source_path': str(path),
-        'current_waypoint_index': waypoint_index,
-        'current_waypoint_description': current_waypoint,
-        'waypoints_description': data,
-    }
-    if current_waypoint is None:
-        context['available_waypoints'] = [
-            entry.get('waypoint') for entry in data.get('waypoints', [])
-        ]
-    return context
-
-
-def build_context_text(task_name=None, waypoint_index=None, description_path=None):
-    """Full waypoint-description dump. Still used by the orientation/transition
-    verifiers, which import these helpers from this module. The collision
-    verifier uses build_intent_context_text instead (minimal, BT-grounded)."""
-    if not task_name and waypoint_index is None and not description_path:
-        return ''
-
-    lines = [
-        "# Task and waypoint context",
-        f"task_name: {task_name or 'unknown'}",
-        f"current_waypoint: {waypoint_index if waypoint_index is not None else 'unknown'}",
-    ]
-
-    context = load_waypoints_context(
-        task_name=task_name,
-        waypoint_index=waypoint_index,
-        description_path=description_path,
-    )
-    if context is None:
-        lines.append("waypoints_description: not found")
-    else:
-        lines.append(
-            "waypoints_description_json:\n"
-            + json.dumps(context, indent=2, sort_keys=True)
-        )
-
-    return "\n".join(lines)
 
 
 def _condition_lines(conditions):
@@ -629,17 +582,7 @@ def _image_to_data_url(image, max_side=None, jpeg_quality=None):
     return f'data:image/{mime};base64,{encoded}'
 
 
-def collect_display_images(
-    obs,
-    camera_names=DEFAULT_CAMERA_NAMES,
-    env_wrapper=None,
-):
-    images = []
-    for camera_name in camera_names:
-        image = _source_to_image(obs, camera_name, env_wrapper=env_wrapper)
-        if image is not None:
-            images.append((camera_name, image))
-    return images
+
 
 
 def sample_recent_observations(
@@ -658,143 +601,7 @@ def sample_recent_observations(
     return sampled, sampled_offsets
 
 
-def show_camera_sequence(
-    recent_obs_list,
-    step_offsets=None,
-    camera_names=DEFAULT_CAMERA_NAMES,
-    env_wrapper=None,
-    title='Images sent to collision VLM',
-):
-    if step_offsets is None:
-        step_offsets = [None] * len(recent_obs_list)
 
-    rows = []
-    all_camera_names = []
-    for obs in recent_obs_list:
-        images = collect_display_images(
-            obs,
-            camera_names=camera_names,
-            env_wrapper=env_wrapper,
-        )
-        rows.append(dict(images))
-        for camera_name, _ in images:
-            if camera_name not in all_camera_names:
-                all_camera_names.append(camera_name)
-
-    if not all_camera_names:
-        print("  [vlm] no camera images available to preview")
-        return
-
-    try:
-        import matplotlib.pyplot as plt
-    except ModuleNotFoundError:
-        print("  [vlm] matplotlib is not installed, skipping image preview")
-        return
-
-    fig, axes = plt.subplots(
-        len(rows),
-        len(all_camera_names),
-        figsize=(3.2 * len(all_camera_names), 2.6 * len(rows)),
-        squeeze=False,
-    )
-
-    for row_index, (row, offset) in enumerate(zip(rows, step_offsets)):
-        for col_index, camera_name in enumerate(all_camera_names):
-            ax = axes[row_index][col_index]
-            image = row.get(camera_name)
-            if image is not None:
-                ax.imshow(image)
-            ax.axis('off')
-            if row_index == 0:
-                ax.set_title(camera_name, fontsize=9)
-            if col_index == 0:
-                if offset is None:
-                    label = f'frame {row_index + 1}'
-                else:
-                    label = 'current' if offset == 0 else f'-{offset}'
-                ax.set_ylabel(label, fontsize=10, rotation=0, labelpad=30)
-
-    fig.suptitle(title)
-    fig.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.1)
-
-
-def save_camera_grid(recent_obs_list, step_offsets, camera_names, env_wrapper,
-                     out_dir, tag=''):
-    """Save the exact camera montage sent to the collision VLM (rows = time
-    offsets, cols = cameras) as a PNG in out_dir. Returns the path, or '' if
-    nothing to save / matplotlib missing. Mirrors show_camera_sequence to disk."""
-    try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-    except ModuleNotFoundError:
-        return ''
-    if step_offsets is None:
-        step_offsets = [None] * len(recent_obs_list)
-    grid_rows, all_cams = [], []
-    for obs in recent_obs_list:
-        images = collect_display_images(obs, camera_names=camera_names,
-                                        env_wrapper=env_wrapper)
-        grid_rows.append(dict(images))
-        for cam, _ in images:
-            if cam not in all_cams:
-                all_cams.append(cam)
-    if not all_cams:
-        return ''
-    fig, axes = plt.subplots(len(grid_rows), len(all_cams),
-                             figsize=(3.2 * len(all_cams), 2.6 * len(grid_rows)),
-                             squeeze=False)
-    for r, (grow, offset) in enumerate(zip(grid_rows, step_offsets)):
-        for c, cam in enumerate(all_cams):
-            ax = axes[r][c]
-            img = grow.get(cam)
-            if img is not None:
-                ax.imshow(img)
-            ax.axis('off')
-            if r == 0:
-                ax.set_title(cam, fontsize=9)
-            if c == 0:
-                label = (f'frame {r + 1}' if offset is None
-                         else 'current' if offset == 0 else f'-{offset}')
-                ax.set_ylabel(label, fontsize=10, rotation=0, labelpad=30)
-    fig.suptitle(f'Images sent to collision VLM {tag}'.strip())
-    fig.tight_layout()
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime('%H%M%S_%f')
-    path = Path(out_dir) / f'collision_vlm_grid_{ts}.png'
-    fig.savefig(path, dpi=100)
-    plt.close(fig)
-    return str(path)
-
-
-def show_camera_images(obs, camera_names=DEFAULT_CAMERA_NAMES, env_wrapper=None):
-    images = collect_display_images(obs, camera_names, env_wrapper=env_wrapper)
-    if not images:
-        print("  [vlm] no camera images available to preview")
-        return
-
-    try:
-        import matplotlib.pyplot as plt
-    except ModuleNotFoundError:
-        print("  [vlm] matplotlib is not installed, skipping image preview")
-        return
-
-    fig, axes = plt.subplots(1, len(images), figsize=(4 * len(images), 4))
-    if len(images) == 1:
-        axes = [axes]
-
-    for ax, (camera_name, image) in zip(axes, images):
-        ax.imshow(image)
-        ax.set_title(camera_name)
-        ax.axis('off')
-
-    fig.suptitle('Current images sent to collision VLM')
-    fig.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.1)
-    input("  Inspect the camera images, then press Enter to send them to VLM...")
 
 
 def _extract_json(text):
@@ -851,32 +658,6 @@ def _extract_partial_collision_happened(text):
     if match is None:
         return None
     return _coerce_collision_happened(match.group(1).strip('"'))
-
-
-def _write_vlm_trace(
-    trace_dir,
-    model,
-    prompt_text,
-    image_manifest,
-    response_text,
-    parsed_result,
-):
-    trace_dir = Path(trace_dir or VLM_TRACE_DIR)
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-    path = trace_dir / f'collision_vlm_trace_{timestamp}.json'
-    payload = {
-        'created_at': datetime.now().isoformat(timespec='seconds'),
-        'model': model,
-        'system_prompt': SYSTEM_PROMPT,
-        'user_prompt_text': prompt_text,
-        'image_manifest': image_manifest,
-        'raw_response_text': response_text,
-        'parsed_result': parsed_result,
-    }
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-    return str(path)
 
 
 def collect_camera_images(obs, camera_names=DEFAULT_CAMERA_NAMES, env_wrapper=None):
@@ -952,23 +733,7 @@ def format_detection_event(row):
     ])
 
 
-def confirm_collision_with_openai(
-    recent_obs_list,
-    step_offsets=None,
-    row=None,
-    telemetry_history=None,
-    env_wrapper=None,
-    task_name=None,
-    waypoint_index=None,
-    target_object=None,
-    stage_context=None,
-    camera_names=DEFAULT_CAMERA_NAMES,
-    model=DEFAULT_OPENAI_MODEL,
-    max_output_tokens=800,
-    preview_images=True,
-    trace=False,
-    trace_dir=VLM_TRACE_DIR,
-):
+def confirm_collision_with_openai(recent_obs_list, step_offsets=None, row=None, telemetry_history=None, env_wrapper=None, task_name=None, waypoint_index=None, target_object=None, stage_context=None, camera_names=DEFAULT_CAMERA_NAMES, model=DEFAULT_OPENAI_MODEL, max_output_tokens=800):
     if model is None:
         model = DEFAULT_OPENAI_MODEL
 
@@ -977,24 +742,11 @@ def confirm_collision_with_openai(
 
     obs = recent_obs_list[-1]
 
-    if preview_images:
-        show_camera_sequence(
-            recent_obs_list,
-            step_offsets=step_offsets,
-            camera_names=camera_names,
-            env_wrapper=env_wrapper,
-        )
-        input("  Inspect the camera images, then press Enter to send them to VLM...")
 
     # Save the montage of images that go into the VLM (env-gated, e.g. for evals).
-    saved_grid = ''
-    grid_dir = os.getenv('AHA_COLLISION_VLM_SAVE_GRID', '').strip()
-    if grid_dir:
-        tag = f'wp{waypoint_index}' if waypoint_index is not None else ''
-        saved_grid = save_camera_grid(recent_obs_list, step_offsets, camera_names,
-                                      env_wrapper, grid_dir, tag=tag)
-        if saved_grid:
-            print(f"  [vlm:collision] camera grid saved -> {saved_grid}")
+
+
+    pass
 
     try:
         import openai
@@ -1098,16 +850,7 @@ def confirm_collision_with_openai(
     )
 
     result = _extract_json(response.output_text)
-    trace_path = None
-    if trace:
-        trace_path = _write_vlm_trace(
-            trace_dir=trace_dir,
-            model=model,
-            prompt_text=prompt_text,
-            image_manifest=image_manifest,
-            response_text=response.output_text,
-            parsed_result=result,
-        )
+
 
     output = {
         'collision_happened': result['collision_happened'],
@@ -1118,8 +861,6 @@ def confirm_collision_with_openai(
     for key in ('visual_evidence', 'torque_evidence', 'decision_basis'):
         if result.get(key):
             output[key] = result[key]
-    if trace_path:
-        output['trace_path'] = trace_path
-    if saved_grid:
-        output['grid_path'] = saved_grid
+
+    pass
     return output

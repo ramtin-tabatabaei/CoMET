@@ -1,11 +1,9 @@
+"""Grip-force measurements, holding phases, and slip threshold calibration."""
 
 from aha_publish import paths
 import json
 import os
 import numpy as np
-
-REPO_ROOT = str(paths.PROJECT_ROOT)
-
 
 # Frames observed before detections are allowed.
 WARMUP_STEPS = 5
@@ -23,7 +21,7 @@ DEFAULT_GRIP_FORCE_DROP_THRESHOLD = 1
 DEFAULT_REQUIRED_PRIOR_HOLDING_STEPS = int(os.getenv('AHA_SLIP_REQUIRED_PRIOR', '1'))
 DEFAULT_HOLD_LOST_GRACE_STEPS = int(os.getenv('AHA_SLIP_HOLD_LOST_GRACE', '2'))
 DEFAULT_CONSECUTIVE_SLIP_FRAMES = int(os.getenv('AHA_SLIP_CONSECUTIVE_FRAMES', '2'))
-DEFAULT_ENABLE_GRASP_NOT_ESTABLISHED_CHECK = False
+
 DEFAULT_WAYPOINTS_DESCRIPTION_DIR = str(paths.DESCRIPTION_DIR)
 DEFAULT_USE_GRIP_FORCE_STATS_THRESHOLDS = True
 DEFAULT_CALIBRATION_ROOT = os.getenv(
@@ -54,13 +52,6 @@ GRASP_START_STATE_TOKENS = (
     'close',
     'grasp',
 )
-RELEASE_STATE_TOKENS = (
-    'releasing',
-    'release',
-    'open_gripper',
-    'opening',
-    'drop',
-)
 
 
 def _safe_array(val, length):
@@ -72,50 +63,11 @@ def _safe_array(val, length):
     return out
 
 
-def decompose_finger_force(force3, normal_dir):
-    """Split one finger's tri-axial contact force into (normal, tangential).
-
-    ``force3`` is a fingertip force vector [fx, fy, fz] in that touch sensor's
-    own local frame (RLBench/PyRep ForceSensor.read()[0]); ``normal_dir`` is the
-    per-finger unit "press" direction estimated at runtime (calibration-free --
-    no knowledge of which sensor axis is the object normal is assumed).
-
-    Returns (f_normal, f_tangential): f_normal is the signed projection onto the
-    press direction; f_tangential is the magnitude of the shear component in the
-    plane orthogonal to it. When no normal direction is known yet, the whole
-    force is reported as normal (tangential 0), so a finger only contributes a
-    shear signal once its baseline press direction is established.
-
-    This is the tri-axial "tangential force" f_xy = sqrt(fx^2 + fy^2) of
-    Wong & Zhu (2026), generalised so the shear plane is defined by the runtime
-    press direction instead of a hardcoded sensor z-axis.
-    """
-    f = np.asarray(force3, dtype=float).reshape(-1)[:3]
-    if f.size < 3:
-        f = np.zeros(3)
-    if normal_dir is None:
-        return float(np.linalg.norm(f)), 0.0
-    nd = np.asarray(normal_dir, dtype=float).reshape(-1)[:3]
-    nn = float(np.linalg.norm(nd))
-    if nn <= 1e-12:
-        return float(np.linalg.norm(f)), 0.0
-    nd = nd / nn
-    f_normal = float(np.dot(f, nd))
-    f_tang_vec = f - f_normal * nd
-    return f_normal, float(np.linalg.norm(f_tang_vec))
-
-
 def obs_to_row(obs, step):
     grip_forces = _safe_array(getattr(obs, 'gripper_touch_forces', None), 6)
-    joint_forces = _safe_array(getattr(obs, 'joint_forces', None), 7)
-    gripper_joint_positions = _safe_array(
-        getattr(obs, 'gripper_joint_positions', None), 2
-    )
-    total_f = float(
-        np.linalg.norm(grip_forces[0:3]) + np.linalg.norm(grip_forces[3:6])
-    )
     left_f = float(np.linalg.norm(grip_forces[0:3]))
     right_f = float(np.linalg.norm(grip_forces[3:6]))
+    total_f = left_f + right_f
 
     return {
         'step': step,
@@ -124,36 +76,12 @@ def obs_to_row(obs, step):
         'right_grip_force': right_f,
         'grip_force_delta': 0.0,
         'grip_force_drop': 0.0,
-        'gripper_joint_delta': 0.0,
-        'torque_norm': float(np.linalg.norm(joint_forces)),
         'is_holding': total_f > DEFAULT_GRIP_FORCE_THRESHOLD,
         'prior_holding_streak': 0,
         'steps_since_holding': None,
-        'recently_holding': False,
-        'slip': False,
-        'slip_candidate_started': False,
-        'slip_candidate_active': False,
-        'low_force_streak': 0,
-        'threshold_crossed': False,
-        'slip_reason': '',
-        'suppression_reason': '',
         'slip_score': 0.0,
         'force_released': False,
         'force_drop_crossed': False,
-        # v2 (tangential-shear / Wong-Zhu) signals. Filled in by the live
-        # detector, which owns the stateful per-finger normal-direction and
-        # tangential baselines; defaulted here so the row schema is stable even
-        # when v2 is inactive or before contact establishes a baseline.
-        'left_normal': left_f,
-        'right_normal': right_f,
-        'left_tangential': 0.0,
-        'right_tangential': 0.0,
-        'tangential_jump': 0.0,
-        'shear_surge': False,
-        'normal_rising': False,
-        '_grip_forces': grip_forces.copy(),
-        '_gripper_joint_positions': gripper_joint_positions.copy(),
-        '_joint_forces': joint_forces.copy(),
     }
 
 
@@ -223,8 +151,6 @@ def load_holding_requirement_from_waypoints(
             'enabled': False,
             'path': path,
             'hold_required_waypoints': [],
-            'release_waypoints': [],
-            'waypoint_reasons': {},
             'reason': 'waypoints description JSON not found',
         }
 
@@ -232,8 +158,6 @@ def load_holding_requirement_from_waypoints(
         data = json.load(f)
 
     hold_required = set()
-    release_waypoints = set()
-    waypoint_reasons = {}
 
     for entry in data.get('waypoints', []):
         waypoint = _waypoint_number(entry)
@@ -253,54 +177,26 @@ def load_holding_requirement_from_waypoints(
             code_text,
         ])
 
-        reasons = []
         if _contains_any(state_text, HOLD_REQUIRED_STATE_TOKENS):
             hold_required.add(waypoint)
-            reasons.append(f"gripper_state={entry.get('gripper_state')}")
         elif _contains_any(combined, HOLD_REQUIRED_STATE_TOKENS):
             hold_required.add(waypoint)
-            reasons.append('description indicates held/carried object')
 
         if _contains_any(state_text, GRASP_START_STATE_TOKENS):
             hold_required.add(waypoint)
-            reasons.append(f"grasp starts here ({entry.get('gripper_state')})")
         elif _contains_any(code_text, ('close_gripper',)):
             hold_required.add(waypoint)
-            reasons.append('code_context closes gripper')
-
-        if _contains_any(state_text, RELEASE_STATE_TOKENS) or 'open' in state_text.split():
-            release_waypoints.add(waypoint)
-            reasons.append(f"release waypoint ({entry.get('gripper_state')})")
-        elif _contains_any(code_text, ('open_gripper',)):
-            release_waypoints.add(waypoint)
-            reasons.append('code_context opens gripper')
-        elif _contains_any(action_text, RELEASE_STATE_TOKENS):
-            release_waypoints.add(waypoint)
-            reasons.append('robot_action describes release/drop')
-
-        if reasons:
-            waypoint_reasons[str(waypoint)] = '; '.join(reasons)
 
     return {
         'enabled': True,
         'path': path,
         'hold_required_waypoints': sorted(hold_required),
-        'release_waypoints': sorted(release_waypoints),
-        'waypoint_reasons': waypoint_reasons,
         'reason': '',
     }
 
 
-def waypoint_requires_holding(waypoint, phase_info, waypoint_path_done=False):
-    # NOTE: release_waypoints is deliberately NOT consulted here. It was derived
-    # from waypoint description text (gripper_state / robot_action keywords), which
-    # false-positives on object nouns -- e.g. close_jar wp4 "lower the lid onto the
-    # jar *opening*" matched the 'opening' release token, tagging a held-throughout
-    # waypoint as a release. That flipped holding_required_phase to False the moment
-    # the path completed and wiped a genuine slip candidate. Commanded releases are
-    # already handled downstream by the live detector's _grasp_active gate, which
-    # tracks the ACTUAL gripper open/close commands, so holding is required exactly
-    # when the waypoint is a hold-required waypoint -- no path_done / release logic.
+def waypoint_requires_holding(waypoint, phase_info):
+    """Use the holding-phase list; commanded releases are handled by the runner."""
     if waypoint is None:
         return False
     try:
@@ -319,15 +215,6 @@ def update_deltas(logs):
             force_delta = row['grip_force'] - prev['grip_force']
             row['grip_force_delta'] = float(abs(force_delta))
             row['grip_force_drop'] = float(max(0.0, -force_delta))
-            curr_joints = row.get(
-                '_gripper_joint_positions', np.zeros(2, dtype=float)
-            )
-            prev_joints = prev.get(
-                '_gripper_joint_positions', np.zeros(2, dtype=float)
-            )
-            row['gripper_joint_delta'] = float(
-                np.linalg.norm(curr_joints - prev_joints)
-            )
 
     update_holding_states(logs)
 
@@ -387,10 +274,6 @@ def default_detector_settings():
         'required_prior_holding_steps': DEFAULT_REQUIRED_PRIOR_HOLDING_STEPS,
         'hold_lost_grace_steps': DEFAULT_HOLD_LOST_GRACE_STEPS,
         'consecutive_slip_frames': DEFAULT_CONSECUTIVE_SLIP_FRAMES,
-        'enable_grasp_not_established_check': (
-            os.getenv('AHA_SLIP_ENABLE_GRASP_NOT_ESTABLISHED', '0').lower()
-            in ('1', 'true', 'yes', 'on')
-        ),
     }
 
 
@@ -403,31 +286,10 @@ def apply_threshold_overrides(thresholds, overrides=None):
     return thresholds
 
 
-def _median_episode_stat(metric_data, key):
-    vals = []
-    for episode in metric_data.get('episodes', []) or []:
-        stats = episode.get('stats') or {}
-        if stats.get(key) is not None:
-            vals.append(float(stats[key]))
-    if not vals:
-        return None
-    return float(np.median(vals))
-
-
-def _stats_threshold_from_metric(metric_stats, metric, k, metric_data=None):
+def _stats_threshold_from_metric(metric_stats, metric, k):
     mean = float(metric_stats['mean'])
     std = float(metric_stats['std'])
     if metric == 'grip_force':
-        # Robust held-force threshold: a fixed number of std below the task's
-        # mean holding force, floored so it never collapses toward 0. The old
-        # `median_episode_min - std` formula collapsed for light/noisy grips and
-        # fell back to a flat 1.0 N for every task (the FP/FN source). mean/std
-        # come from this task's clean baseline, so it is per-object. Tunable via
-        # env for offline sweeps without recalibrating.
-        # Grasp bar = max(mean - k*std, floor) of the clean-run baseline. In the
-        # proportional method (method 1) this is the "a grasp really happened"
-        # gate, so it should reflect the true baseline hold force, not be capped.
-        # The ceiling is off by default (kept as an optional knob).
         grip_k = float(os.getenv('AHA_SLIP_GRIP_K', '2.0'))
         floor = float(os.getenv('AHA_SLIP_GRIP_FLOOR', '0.1'))
         ceiling = float(os.getenv('AHA_SLIP_GRIP_CEILING', 'inf'))
@@ -486,7 +348,7 @@ def task_grip_force_stats_thresholds(
         }
 
     grip_force_threshold = _stats_threshold_from_metric(
-        grip_stats, 'grip_force', k, metric_data=grip_metric
+        grip_stats, 'grip_force', k
     )
     grip_force_drop_threshold = _stats_threshold_from_metric(
         drop_stats, 'grip_force_drop', k
@@ -505,9 +367,6 @@ def task_grip_force_stats_thresholds(
         'grip_force_formula': (
             'max(floor, mean - grip_k * std)  '
             '[grip_k=AHA_SLIP_GRIP_K (def 2.0), floor=AHA_SLIP_GRIP_FLOOR (def 0.1)]'
-        ),
-        'grip_force_median_episode_min': _median_episode_stat(
-            grip_metric, 'min'
         ),
         'grip_force_drop_formula': 'mean + k * std',
     }
@@ -552,7 +411,7 @@ def apply_task_grip_force_stats_thresholds(
     return settings
 
 
-def freeze_thresholds(baseline, threshold_overrides=None):
+def freeze_thresholds(threshold_overrides=None):
     """Lock slip detector thresholds.
 
     The defaults are intentionally absolute because early episode warmup often
@@ -605,40 +464,19 @@ def check_slip(
 
     row['force_released'] = force_released
     row['force_drop_crossed'] = force_drop_crossed
-    row['recently_holding'] = recently_holding
 
     reasons = []
     if not (prior_holding or recently_holding):
         row['slip_score'] = 0.0
         return False, 'not_recently_holding'
 
-    # Detection method (AHA_SLIP_METHOD):
-    #   1 (default) = proportional collapse: fire when grip falls by a set
-    #                 fraction of its held peak (row['proportional_collapse'],
-    #                 computed by the live detector which tracks the peak). Falls
-    #                 back to the grip-level test if the field is absent.
-    #   2 (previous) = force drop: fire when the frame-to-frame grip drop crosses
-    #                  the drop threshold.
-    #   3 (v2, Wong-Zhu) = tangential shear surge: fire when the per-finger
-    #                 tangential (shear) force jumps -- an INCIPIENT slip, caught
-    #                 before the grip magnitude collapses. row['shear_surge'] is
-    #                 computed by the live detector from the calibration-free
-    #                 per-finger tangential baseline.
-    method = os.getenv('AHA_SLIP_METHOD', '1').strip()
-    if method == '2':
-        slip_started = force_drop_crossed
-    elif method == '3':
-        slip_started = bool(row.get('shear_surge', False))
-    else:
-        slip_started = bool(row.get('proportional_collapse', force_released))
+    # The default rule detects a proportional collapse of the held grip force.
+    slip_started = bool(row.get('proportional_collapse', force_released))
 
     if force_released:
         reasons.append('force_released')
     if force_drop_crossed:
         reasons.append('force_drop_start')
-    if row.get('shear_surge'):
-        reasons.append(
-            f"tangential_shear_surge(jump={row.get('tangential_jump', 0.0):.3f})")
     if recently_holding and not prior_holding:
         reasons.append(f"recently_held_{steps_since_holding}_steps_ago")
 

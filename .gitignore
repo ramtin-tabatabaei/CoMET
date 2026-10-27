@@ -10,6 +10,7 @@ __pycache__/
 .env.*
 !.env.example
 api_key*.txt
+api-code.txt
 *.log
 *.egg-info/
 build/

@@ -1,6 +1,6 @@
 """Prompt templates and naming guidance for task description generation."""
 
-from aha_publish import paths
+
 
 from .config import *
 
@@ -78,19 +78,19 @@ Return ONLY valid JSON, no markdown, in exactly this structure:
     {
       "name": "<__NAME_FIELD_HINT__>",
       "original_name": "<the exact simulator/TTM name for this object as given in the supplied scene/object context. Use null only if the object has no supplied name. This preserves the link to simulator state even when 'name' is descriptive.>",
-      "role": "<role in the task>"__RELATIONSHIPS_FIELD__
+      "role": "<role in the task>"
     }
   ],
   "waypoints": [
     {
       "waypoint": 0,
       "visual_summary": "<Concrete description from the grid image row.>",
-      "robot_action": "<What the robot is doing at this moment.>",__MOTION_FIELD__
+      "robot_action": "<What the robot is doing at this moment.>",
       "approx_distance_to_objects": {
         "<object name>": "<Qualitative spatial relation from the end effector to this object, in words only — no measurements, no numbers>"
-      },__WAYPOINT_RELATIONSHIP_FIELD__
+      },
       "gripper_state": "<open, closing, closed, holding object, releasing, pressing button, not applicable, or uncertain>",
-      "held_object": "<the key_scene_objects name of the single object the gripper is holding at this waypoint, decided with the four gripper rules above, or null when it holds nothing>"__SCENE_CONTEXT_FIELD__
+      "held_object": "<the key_scene_objects name of the single object the gripper is holding at this waypoint, decided with the four gripper rules above, or null when it holds nothing>"
     }
   ]
 }
@@ -109,46 +109,6 @@ Rules:
 - if the image and the two structured inputs cannot settle something, mark it uncertain rather than overstating.
 - Do not add any certainty or quality-score field.
 - Do not mention API, prompt, or file handling details in the JSON."""
-
-
-# --- Optional output fields, off by default ---
-# These schema fields are not consumed by any downstream code (bt_maker/detectors
-# only read them as raw prompt text), so they are excluded from the generated JSON
-# unless explicitly re-enabled. Each placeholder in USER_PROMPT_TEMPLATE is replaced
-# with its snippet when the controlling flag is set, or "" when it is not.
-# All of these are gated by --extra-fields.
-OPTIONAL_OUTPUT_FIELDS = {
-    "__MOTION_FIELD__": (
-        "include_extra_fields",
-        '\n      "approx_motion_from_previous_waypoint": "<Movement from the previous '
-        'waypoint described in words only — direction and coarse extent, never a '
-        'measurement or number. For the first waypoint, describe the initial relation '
-        'to the relevant task object instead.>",',
-    ),
-    "__WAYPOINT_RELATIONSHIP_FIELD__": (
-        "include_extra_fields",
-        '\n      "waypoint_relationship_used": "<The relevant waypoint/object relation '
-        "using neutral waypoint placeholders, or 'not available'.>\",",
-    ),
-    "__SCENE_CONTEXT_FIELD__": (
-        "include_extra_fields",
-        ',\n      "scene_context_used": "<How supplied object/relationship context '
-        "changes or confirms the interpretation, or 'not available'.>\"",
-    ),
-    "__RELATIONSHIPS_FIELD__": (
-        "include_extra_fields",
-        ',\n      "relationships": "<important spatial or task relationship>"',
-    ),
-}
-
-
-def optional_field_replacements(args: argparse.Namespace) -> dict[str, str]:
-    """Map each optional-field placeholder to its snippet (if the controlling flag is
-    set) or an empty string, so disabled fields vanish from the prompt schema."""
-    return {
-        placeholder: (snippet if getattr(args, flag, False) else "")
-        for placeholder, (flag, snippet) in OPTIONAL_OUTPUT_FIELDS.items()
-    }
 
 
 # --- Object-naming guidance, selected by --naming / DEFAULT_NAMING_MODE ---
@@ -206,4 +166,3 @@ NAMING_RULE = {
 def resolve_naming_mode(args: argparse.Namespace) -> str:
     mode = str(getattr(args, "naming", DEFAULT_NAMING_MODE) or DEFAULT_NAMING_MODE).strip().lower()
     return mode if mode in NAMING_RULE else "original"
-

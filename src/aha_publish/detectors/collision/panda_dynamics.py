@@ -183,25 +183,7 @@ def _dM_dq(q, k, eps=1e-6):
     return (mass_matrix(qp) - mass_matrix(qm)) / (2.0 * eps)
 
 
-def coriolis_matrix(q, qd):
-    """Coriolis matrix C(q, qd) via Christoffel symbols (matches rtb).
 
-        C_ij = sum_k 0.5 (dM_ij/dq_k + dM_ik/dq_j - dM_jk/dq_i) qd_k
-
-    Uses finite-difference partials of M. C(q,qd) qd equals coriolis_vector,
-    and C(q,qd)^T qd is what the momentum observer integrates.
-    """
-    q = np.asarray(q, float).reshape(-1)
-    qd = np.asarray(qd, float).reshape(-1)
-    dM = np.stack([_dM_dq(q, k) for k in range(N)], axis=0)   # (k,i,j)
-    C = np.zeros((N, N))
-    for i in range(N):
-        for j in range(N):
-            s = 0.0
-            for k in range(N):
-                s += 0.5 * (dM[k, i, j] + dM[j, i, k] - dM[i, j, k]) * qd[k]
-            C[i, j] = s
-    return C
 
 
 def coriolis_transpose_qd(q, qd):

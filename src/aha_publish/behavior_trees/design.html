@@ -880,7 +880,7 @@
       `;
 
       return `
-        <div class="condition-row" data-kind="${kind}" data-original="${escapeHtml(text)}" data-reason="${escapeHtml(reasonText)}">
+        <div class="condition-row" data-kind="${kind}" data-original="${escapeHtml(condition?.original_condition ?? text)}" data-reason="${escapeHtml(reasonText)}">
           <div class="condition-top">
             <input class="use-check" type="checkbox" ${checked} aria-label="Use condition ${index + 1}">
             <div>

@@ -1,126 +1,43 @@
-#!/usr/bin/env python3
-"""Stage 1 of 2 -- build the per-checkpoint detection sample table.
+'Build A1–A4 checkpoint samples and frame sidecars from recorded BT runs.'
 
-Walks the BT run directories and the GPT-baseline grids and flattens every
-execution checkpoint into one CSV row:
-
-    task,failure_condition,waypoint,gt,B2,A1,A2,A3,A4
-
-    task              RLBench task name.
-    failure_condition the injected case, e.g. 'clean', 'collision_wp3',
-                      'wrong_sequence_v2'.  Together with `task` it identifies
-                      one episode; the trailing _wpN is the injection waypoint.
-    waypoint          the execution checkpoint inside that episode.
-    gt                'success' before the injection waypoint and on clean runs;
-                      'failure,<Type>' from the injection waypoint onwards.  Same
-                      rule AND same vocabulary as the GPT baseline's own ground
-                      truth (assess_reactive_gpt.ground_truth / FAILTYPE_TO_TYPES),
-                      so a row here is directly comparable with the `gt` column of
-                      out_grids/<task>/<case>/vlm_result.csv.
-    B2 A1 A2 A3 A4    each method's verdict at this checkpoint, in the same
-                      vocabulary as `gt`: 'success' when it raised no alarm,
-                      'failure,<Type>' with the type it called, and (B2 only)
-                      'uncertain'.  EMPTY when the method has no result for this
-                      episode at all, e.g. an ungraded baseline case.
-                      score_detection_samples.py decides what to do with the
-                      empty and 'uncertain' cells.
-
-Where each method's predicted TYPE comes from
----------------------------------------------
-B2  the baseline's own `gpt` column, copied verbatim.
-A1  the pre/post conditions that failed, and nothing else.  A lone
-    object_in_gripper violation is Grasp at the grasp primitive and Slip during
-    transport; several conditions failing at once, a robot-alignment condition or
-    a gripper open/closed condition is Wrong Sequence; otherwise the BT's own tag
-    on the violated predicate.
-    Failed selected_object(...) or on(...) predicates take precedence and map
-    to WrongObjectSelection.
-A2  the detector that fired: collision -> collision, slip -> Slip, freezing ->
-    freezing, transition -> Wrongtransition, orientation -> WrongOrientation.
-A3  the same, restricted to confirmed fires.
-    For injected wrong_object episodes, transition and orientation detector
-    alarms are excluded from A2/A3/A4 and their latency frames: these deviations
-    reflect the wrong target selection rather than separate pose failures.
-A4  A3's type wherever a detector fired, since the sensor measures the fault
-    directly and a condition violated at the same moment is usually its symptom;
-    A1's type only at checkpoints no detector flagged.
-
-Two type names are then folded away in every column (see TYPE_REMAP): a
-`freezing` call becomes `success`, because no freezing case is injected in these
-runs and the class cannot be true anywhere in the table, and `ObjectNotFound`
-becomes `Wrong Sequence`, the injected class it corresponds to here.
-
-When several detectors fire at one waypoint the EARLIEST fire names the
-checkpoint -- a reactive system stops on the first alarm, so that alarm's type is
-what it would report.
-
-Where each method's alarms come from
-------------------------------------
-B2  GPT-5.6 reactive baseline .. out_grids/<task>/<case>/, one row per stage,
-                                 verdict success / failure,<type> / uncertain.
-                                 assess_reactive_gpt.py's --csv names the file, so
-                                 it is not always vlm_result.csv; any CSV in the
-                                 case folder carrying the assessor's schema counts,
-                                 most recently written wins.
-A1  Condition VLM only ......... vlm_events.csv channel=condition rows with a
-                                 FAIL verdict.  A check is attributed to the
-                                 waypoint that had just completed: prepost@w
-                                 covers the boundary after w-1, post@w after w.
-A2  Detectors only ............. raw '[DETECTOR] X ... at waypoint N (step S)'
-                                 lines in run.log -- no VLM in the loop.
-A3  Detectors + confirmation ... A2, but a fire from a detector that HAS a VLM
-                                 confirmation channel (collision, slip) only
-                                 counts when the VLM answered YES.  Detectors
-                                 with no confirmation channel pass through.
-A4  Full ....................... A1 OR A3, alarm-wise; where both fire the type
-                                 is A3's alone (see above), and the alarm frame
-                                 is still the earlier of the two.
-
-Also writes a sidecar `<name>_frames.csv` with the injection frame and each
-method's first alarm frame per episode, on the same (task, failure_condition)
-key.  Only the latency rows of the failure-specific table need it; the scorer
-runs fine without it.
-
-Episodes whose injected failure could not physically manifest (planner skipped
-the waypoint, the slip never released, freezing at the final waypoint) are
-dropped, matching run_all_tasks_all_failures.score()'s N/A rules.  --keep-na
-keeps them.
-
-Usage
------
-    python aha_scripts/make_detection_samples.py           # every task under --bt-root
-    python aha_scripts/make_detection_samples.py --tasks close_jar --keep-na
-
-The baseline's 'uncertain' verdict is carried through as-is; whether it counts as
-an alarm is score_detection_samples.py's --uncertain-as flag.
-"""
-
-from __future__ import annotations
 
 from aha_publish import paths
+from aha_publish.running.run_support import parse_vlm_events
+
 
 import argparse
+
+
 import csv
+
+
 import re
+
+
 import sys
+
+
 from collections import defaultdict
+
+
 from pathlib import Path
 
-REPO = (paths.PROJECT_ROOT)
 
 DEFAULT_BT_ROOT = (paths.RUNS_DIR)
-DEFAULT_GRID_ROOT = (paths.BASELINE_DIR)
+
+
 DEFAULT_OUT = (paths.SCORES_DIR / 'detection_samples.csv')
 
-METHODS = ("B2", "A1", "A2", "A3", "A4")
-DETECTORS = ("collision", "freezing", "orientation", "slip", "transition")
 
-# Injected failgen failure -> the live detector that owns it ('' = none; the
-# failure is only reachable through the VLM condition checks).
+METHODS = ("A1", "A2", "A3", "A4")
+
+
+DETECTORS = ("collision", "orientation", "slip", "transition")
+
+
 RESPONSIBLE = {
     "slip": "slip",
     "collision": "collision",
-    "freezing": "freezing",
     "transition": "transition",
     "combined_transition": "transition",
     "orientation": "orientation",
@@ -133,19 +50,14 @@ RESPONSIBLE = {
     "wrong_sequence_v2": "",
 }
 
-# Only these detectors are put to a VLM confirmation vote (channel=detector in
-# vlm_events.csv), so A3 can only differ from A2 on their failures.
+
 CONFIRMED_DETECTORS = ("collision", "slip")
 
-# Injected failgen failure -> the canonical ground-truth type name.  Kept
-# identical to assess_reactive_gpt.FAILTYPE_TO_TYPES (first entry of each tuple)
-# so both pipelines label the same episode the same way; the trailing entries are
-# aliases for failgen names the baseline map does not list.
+
 FAILTYPE_TO_TYPE = {
     "slip": "Slip",
     "grasp": "Grasp",
     "collision": "collision",
-    "freezing": "freezing",
     "wrong_sequence_v2": "Wrong Sequence",
     "combined_transition": "Wrongtransition",
     "combined_orientation": "WrongOrientation",
@@ -157,66 +69,31 @@ FAILTYPE_TO_TYPE = {
     "rotation": "WrongOrientation",
 }
 
-# Type names that no ground-truth row in this benchmark can carry, folded into
-# the vocabulary it does score.  Applied to EVERY column, gt and predictions
-# alike, so the table keeps one shared vocabulary.
-#
-#   freezing        no freezing case is injected in these runs, so a freezing
-#                   call names a class that cannot be true anywhere in the
-#                   table.  It is folded into 'success': the method is treated
-#                   as having raised no alarm at that checkpoint rather than an
-#                   alarm of a type the benchmark cannot confirm or refute.
-#   ObjectNotFound  has no injected counterpart either.  The BT raises it when
-#                   the object the stage names is not where the stage expects
-#                   it, which in this benchmark is what a mis-ordered execution
-#                   looks like, so it scores as Wrong Sequence.
-#
-# A None target drops the type; when a multi-type label loses every component
-# the checkpoint becomes 'success'.
+
 TYPE_REMAP = {
-    "freezing": None,
     "ObjectNotFound": "Wrong Sequence",
 }
 
 
-# Root-cause precedence for detectors that fire at the SAME waypoint.  A collision
-# shoves the arm and the held object, so the transition/orientation deviation it
-# produces is a downstream effect, not a second independent failure; the same goes
-# for a slip or a stall.  When several fire together the lowest rank here names the
-# checkpoint, and the earliest fire of any of them still sets the alarm frame (that
-# is when a reactive system would stop).  This is a property of the detectors, not
-# of the label -- it never consults the ground truth.
 DETECTOR_PRECEDENCE = {
     "collision": 0,
     "slip": 1,
-    "freezing": 2,
-    "transition": 3,
-    "orientation": 3,
+    "transition": 2,
+    "orientation": 2,
 }
 
-# Live detector -> the canonical type name it predicts, same vocabulary as the
-# ground truth above.
+
 DETECTOR_TO_TYPE = {
     "collision": "collision",
     "slip": "Slip",
-    "freezing": "freezing",
     "transition": "Wrongtransition",
     "orientation": "WrongOrientation",
 }
 
-# Everything the detector bank can name.  A1 type outside this set has no
-# detector counterpart, so A3 priority has nothing to override and the name
-# survives into A4.
+
 DETECTOR_VOCABULARY = frozenset(DETECTOR_TO_TYPE.values())
 
-# A1 sees pre/post conditions and nothing else, so its predicted type is the tag
-# the BT already attaches to the violated predicate -- printed in run.log as
-# '  - object_in_gripper(ball) == True  [GraspStateFailure]'.  These are the BT's
-# own tag names; the map converts them to the shared type vocabulary.
-#
-# object_in_gripper cannot separate "never grasped" from "grasped then dropped",
-# so GraspStateFailure -> Grasp: a slip episode is genuinely indistinguishable
-# from a no-grasp episode through conditions alone.
+
 CONDITION_TAG_TO_TYPE = {
     "ObjectNotFound": "ObjectNotFound",
     "WrongObjectSelection": "WrongObjectSelection",
@@ -228,55 +105,58 @@ CONDITION_TAG_TO_TYPE = {
     "ContactStateFailure": "Wrongtransition",
 }
 
-# 'PRE-CHECK before waypoint 1: grasp the ball' / 'POST-CHECK after waypoint 0: ...'
+
 CHECK_HEADER_RE = re.compile(
     r"^(?P<kind>PRE|POST)-CHECK\s+(?:before|after)\s+waypoint\s+(?P<wp>\d+):",
     re.MULTILINE)
+
+
 GRIP_PREDICATE = "object_in_gripper"
+
+
 ALIGNMENT_PREDICATE = "end_effector_aligned_with"
-# selected_object(X) is the one condition that names WHICH object the robot went
-# for, so unlike the state predicates its violation identifies the fault outright.
+
+
 SELECTION_PREDICATE = "selected_object"
 
-# '  VLM PRE+POST CHECK: FAIL' -- one line per condition check the VLM ran.
+
 CHECK_VERDICT_RE = re.compile(
-    r"^\s+VLM\s+(?:PRE\+POST|PRE|POST)\s+CHECK:\s+(?P<verdict>\w+)\s*$",
+    r"^\s+VLM\s+(?:PRE\+POST|PRE|POST)(?:\s+SIMULATOR)?\s+CHECK:\s+(?P<verdict>\w+)\s*$",
     re.MULTILINE)
-# '  - <predicate>  [Tag]' in a PRE-CHECK / POST-CHECK condition listing.
+
+
 CONDITION_TAG_RE = re.compile(
     r"^\s+-\s+(?P<pred>.+?)\s+\[(?P<tag>[A-Za-z_]+)\]\s*$", re.MULTILINE)
-# '    - not_satisfied: pre waypoint 2: object_in_gripper(ball) == True'
+
+
 NOT_SATISFIED_RE = re.compile(
     r"^\s+-\s+not_satisfied:\s+(?:(?:pre|post)\s+waypoint\s+\d+:\s*)?"
     r"(?P<pred>.+?)\s*$", re.MULTILINE)
 
+
 DETECTOR_FIRE_RE = re.compile(
-    r"\[DETECTOR\]\s+(ORIENTATION|TRANSITION|SLIP|COLLISION|FREEZING)\s+"
+    r"\[DETECTOR\]\s+(ORIENTATION|TRANSITION|SLIP|COLLISION)\s+"
     r"(?:failure|detected)\s+at waypoint\s+(\d+)\s+\(step\s+(\d+)\)",
     re.IGNORECASE,
 )
+
+
 DETECTOR_SUMMARY_RE = re.compile(
-    r"^\s*(orientation|transition|slip|collision|freezing)\s+"
+    r"^\s*(orientation|transition|slip|collision)\s+"
     r"DETECTED\s+\1\s+x(\d+)\s+\(first:\s+step\s+(\d+),\s+waypoint\s+(\d+),",
     re.IGNORECASE,
 )
-WAYPOINT_OF_RE = re.compile(r"^Waypoint\s+(\d+)\s+of\s+(\d+)\s*$", re.MULTILINE)
-FREEZE_SKIP_RE = re.compile(r"skipping final waypoint (\d+)")
 
-# Only these logs carry a GLOBAL simulation step in their `step` column, so only
-# they can define waypoint frame boundaries.  transition_/orientation_drift.csv
-# restart `step` at every waypoint.
+
+WAYPOINT_OF_RE = re.compile(r"^Waypoint\s+(\d+)\s+of\s+(\d+)\s*$", re.MULTILINE)
+
+
 GLOBAL_STEP_LOGS = ("slip_trace.csv", "slip_drift.csv", "collision_drift.csv")
 
-# ... and for the same reason, these detectors report a per-waypoint step in
-# their '[DETECTOR] ... (step N)' line, which has to be rebased onto the global
-# frame axis before it can be compared with an injection frame.
+
 LOCAL_STEP_DETECTORS = frozenset({"orientation", "transition"})
 
 
-# --------------------------------------------------------------------------- #
-# helpers
-# --------------------------------------------------------------------------- #
 def _int(value):
     try:
         if value in ("", None):
@@ -284,37 +164,6 @@ def _int(value):
         return int(float(value))
     except (TypeError, ValueError):
         return None
-
-
-# assess_reactive_gpt.py writes its per-case results under whatever --csv names,
-# so a case folder may hold vlm_result.csv, slip_results_gpt54.csv, ... . These
-# columns identify the file as that assessor's output whatever it is called.
-GRID_RESULT_COLUMNS = {"case", "image", "stage", "gt", "gpt"}
-
-
-def find_grid_result(case_dir: Path, preferred: str = "") -> Path | None:
-    """The baseline's result CSV in one case folder, newest first.
-
-    `preferred` pins an exact filename; otherwise every CSV with the assessor's
-    schema is a candidate and the most recently written one is used.
-    """
-    if not case_dir.is_dir():
-        return None
-    if preferred:
-        path = case_dir / preferred
-        return path if path.exists() else None
-    candidates = []
-    for path in case_dir.glob("*.csv"):
-        try:
-            with path.open(newline="") as handle:
-                header = next(csv.reader(handle), [])
-        except OSError:
-            continue
-        if GRID_RESULT_COLUMNS <= set(header):
-            candidates.append(path)
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def read_csv(path: Path) -> list[dict]:
@@ -362,9 +211,6 @@ def alarm_type(alarm: dict) -> str:
     return "|".join(t["type"] for t in ordered)
 
 
-# --------------------------------------------------------------------------- #
-# telemetry
-# --------------------------------------------------------------------------- #
 def waypoint_bounds(run_dir: Path, n_wp: int = 0) -> dict[int, tuple[int, int]]:
     """waypoint -> (first_global_step, last_global_step).
 
@@ -433,9 +279,6 @@ def condition_alarm(row: dict) -> bool:
             or str(row.get("verdict") or "").strip().upper() in ("FAIL", "FAILED"))
 
 
-# --------------------------------------------------------------------------- #
-# N/A rules
-# --------------------------------------------------------------------------- #
 def slip_holding_at_injection(run_dir: Path, inj_wp: int) -> bool | None:
     rows = read_csv(run_dir / "slip_trace.csv") or read_csv(run_dir / "slip_drift.csv")
     if not rows:
@@ -453,17 +296,13 @@ def episode_na_reason(run_text: str, run_dir: Path, failure: str, inj_wp,
                       responsible: str, fires: dict) -> str:
     """Why this episode cannot be scored, '' when it is scorable.
 
-    Mirrors run_all_tasks_all_failures.score(): a failure that physically could
+    Mirrors bt_runner.score(): a failure that physically could
     not manifest is Not-Applicable, not a missed detection.
     """
     if failure == "clean" or inj_wp is None:
         return ""
     if any(wp in (inj_wp, inj_wp + 1) for wp in fires.get(responsible, {})):
         return ""                      # a genuine catch is never downgraded
-    if responsible == "freezing":
-        match = FREEZE_SKIP_RE.search(run_text)
-        if match and int(match.group(1)) == inj_wp:
-            return "NA_final_wp"
     if responsible == "slip":
         if "SLIPPING NOW" not in run_text:
             return "NA_no_slip"
@@ -479,9 +318,6 @@ def episode_na_reason(run_text: str, run_dir: Path, failure: str, inj_wp,
     return ""
 
 
-# --------------------------------------------------------------------------- #
-# one episode
-# --------------------------------------------------------------------------- #
 def _norm_predicate(text: str) -> str:
     """Predicate text as a comparison key: no case, no spaces, no trailing 'OK'."""
     return re.sub(r"\s+", "", re.sub(r"\s+OK$", "", text or "")).lower()
@@ -544,10 +380,11 @@ def condition_failure_type(violated: list[str], stage: int | None,
     A lone object_in_gripper violation is a grasp problem or a
     slip depending on which primitive it lands in: failing to be holding at the
     grasp stage means the object was never picked up, while failing during
-    transport means it was picked up and lost.  Anything else -- several
-    conditions failing together, a robot-alignment condition, or a gripper
-    open/closed condition -- is an execution-order problem, so it is labelled a
-    sequence violation.
+    transport means it was picked up and lost.  A lone robot-alignment condition
+    is Wrongtransition: the gripper is not at the pose the stage needs, which is
+    the transition failure itself.  Anything else -- several conditions failing
+    together, or a gripper open/closed condition -- is an execution-order
+    problem, so it is labelled a sequence violation.
     """
     if not violated:
         return "unknown"
@@ -567,8 +404,14 @@ def condition_failure_type(violated: list[str], stage: int | None,
         return "Wrong Sequence"
     predicate = violated[0]
     tag = tags.get(predicate)
-    if predicate.startswith(ALIGNMENT_PREDICATE) or tag == "ExecutionSequenceMismatch":
+    if tag == "ExecutionSequenceMismatch":
         return "Wrong Sequence"
+    # A lone end_effector_aligned_with violation says the gripper is not where the
+    # stage needs it to be, which is the transition failure itself rather than a
+    # symptom of a mis-ordered execution -- the BT tags it WrongPosition for the
+    # same reason.  Spelled out here so it holds even when run.log printed no tag.
+    if predicate.startswith(ALIGNMENT_PREDICATE):
+        return "Wrongtransition"
     return CONDITION_TAG_TO_TYPE.get(tag, "unknown")
 
 
@@ -586,33 +429,9 @@ def failed_check_predicates(run_text: str) -> list[list[str]]:
     return out
 
 
-def failed_check_types(run_text: str) -> list[str]:
-    """Type of every FAIL condition check, in the order run.log printed them.
-
-    Each check's block runs to the next check, so the not_satisfied lines it
-    contains are exactly its own.  The order matches the condition rows of
-    vlm_events.csv, which is how the type is attached to a waypoint.
-    """
-    tags = condition_tags(run_text)
-    checks = list(CHECK_VERDICT_RE.finditer(run_text or ""))
-    types = []
-    for index, match in enumerate(checks):
-        if match.group("verdict").strip().upper() not in ("FAIL", "FAILED"):
-            continue
-        end = checks[index + 1].start() if index + 1 < len(checks) else len(run_text)
-        block = run_text[match.end():end]
-        found = "unknown"
-        for hit in NOT_SATISFIED_RE.finditer(block):
-            tag = tags.get(_norm_predicate(hit.group("pred")))
-            if tag:
-                found = CONDITION_TAG_TO_TYPE[tag]
-                break
-        types.append(found)
-    return types
-
-
-def load_episode(task: str, case_dir: Path, grid_root: Path,
-                 grid_csv_name: str = "") -> dict | None:
+def load_episode(task: str, case_dir: Path) -> dict | None:
+    if (task, case_dir.name) in EXCLUDED_EPISODES:
+        return None
     run_log = case_dir / "run.log"
     if not run_log.exists():
         return None
@@ -632,7 +451,7 @@ def load_episode(task: str, case_dir: Path, grid_root: Path,
     if not n_wp:
         return None
 
-    events = read_csv(case_dir / "vlm_events.csv")
+    events = parse_vlm_events(run_text)
     fires = parse_detector_fires(run_text)
 
     inj_frame = next((_int(r.get("injection_frame")) for r in events
@@ -643,9 +462,8 @@ def load_episode(task: str, case_dir: Path, grid_root: Path,
         inj_frame = 0
 
     # ---- A1: condition-VLM alarms ---------------------------------------- #
-    # vlm_events.csv says a check FAILED but not which predicate did it, so the
-    # type is read from run.log's FAIL blocks, paired with the FAIL event rows in
-    # order.  A1 therefore only ever names a failure its own pre/post conditions
+    # Pair checkpoint verdicts with the violated predicates in the normal
+    # run log, preserving their chronological order.  A1 therefore only ever names a failure its own pre/post conditions
     # can express -- no detector, no episode-level diagnosis.
     tags = condition_tags(run_text)
     grasp_stage, transport = grasp_and_transport_stages(run_text)
@@ -776,27 +594,6 @@ def load_episode(task: str, case_dir: Path, grid_root: Path,
         for entry in alarm["types"]:
             add_alarm(a4, wp, alarm["frame"], entry["type"], entry["rank"])
 
-    # ---- B2: GPT baseline grids ------------------------------------------ #
-    # The baseline already writes 'success' / 'uncertain' / 'failure,<Type>', so
-    # its verdict is copied through unchanged; only the failure verdicts become
-    # alarms (and so feed the latency sidecar).
-    b2_verdicts: dict[int, str] | None = None
-    b2: dict[int, dict] = {}
-    grid_csv = find_grid_result(grid_root / task / case, grid_csv_name)
-    grid_rows = read_csv(grid_csv) if grid_csv else []
-    if grid_rows:
-        b2_verdicts = {}
-        for row in grid_rows:
-            stage = _int(row.get("stage"))
-            if stage is None or not 0 <= stage < n_wp:
-                continue
-            verdict = (row.get("gpt") or "").strip()
-            b2_verdicts[stage] = verdict or "success"
-            if verdict.lower().startswith("failure"):
-                _, _, ftype = verdict.partition(",")
-                add_alarm(b2, stage, bounds.get(stage, (None, None))[1],
-                          ftype.strip() or "?")
-
     return {
         "task": task,
         "case": case,
@@ -806,10 +603,7 @@ def load_episode(task: str, case_dir: Path, grid_root: Path,
         "n_wp": n_wp,
         "na": episode_na_reason(run_text, case_dir, failure, inj_wp,
                                 responsible, fires),
-        "alarms": {"A1": a1, "A2": a2, "A3": a3, "A4": a4,
-                   "B2": None if b2_verdicts is None else b2},
-        "b2_verdicts": b2_verdicts,
-        "b2_source": grid_csv.name if grid_csv and grid_rows else "",
+        "alarms": {"A1": a1, "A2": a2, "A3": a3, "A4": a4},
     }
 
 
@@ -817,7 +611,7 @@ def discover_tasks(bt_root: Path) -> list[str]:
     """Every task under `bt_root`, i.e. every subdirectory holding an episode.
 
     The run root also carries loose bookkeeping files (plan.csv, summary.csv,
-    vlm_events_all.csv) and can hold half-started task folders, so a directory
+    metrics files) and can hold half-started task folders, so a directory
     only counts as a task once at least one of its case folders has a run.log.
     """
     if not bt_root.is_dir():
@@ -827,7 +621,7 @@ def discover_tasks(bt_root: Path) -> list[str]:
                                         for c in p.iterdir()))
 
 
-def load_all(bt_root: Path, grid_root: Path, tasks, grid_csv_name: str = ""):
+def load_all(bt_root: Path, tasks):
     episodes = []
     for task in tasks:
         task_dir = bt_root / task
@@ -836,15 +630,12 @@ def load_all(bt_root: Path, grid_root: Path, tasks, grid_csv_name: str = ""):
                   file=sys.stderr)
             continue
         for case_dir in sorted(p for p in task_dir.iterdir() if p.is_dir()):
-            episode = load_episode(task, case_dir, grid_root, grid_csv_name)
+            episode = load_episode(task, case_dir)
             if episode:
                 episodes.append(episode)
     return episodes
 
 
-# --------------------------------------------------------------------------- #
-# output
-# --------------------------------------------------------------------------- #
 def gt_label(episode: dict, wp: int) -> str:
     """'success', or 'failure,<Type>' once the injected failure is present.
 
@@ -868,7 +659,7 @@ def remap_types(label: str) -> str:
     if not label.startswith("failure,"):
         return label
     kept: list[str] = []
-    for name in label[len("failure,"):].split("|"):
+    for name in label[8:].split("|"):
         target = TYPE_REMAP.get(name, name)
         if target and target not in kept:
             kept.append(target)
@@ -880,21 +671,25 @@ def method_label(episode: dict, method: str, wp: int) -> str:
     alarms = episode["alarms"][method]
     if alarms is None:
         return ""                                   # no result for this episode
-    if method == "B2":
-        # The baseline's verdict is authoritative, including 'uncertain'.
-        return episode["b2_verdicts"].get(wp, "success")
     alarm = alarms.get(wp)
     return f"failure,{alarm_type(alarm)}" if alarm else "success"
 
 
-# Explicit user-requested checkpoint exclusions from the exported dataset.
+EXCLUDED_EPISODES = frozenset({
+    ("push_button", "wrong_object_wp1"),
+    ("put_item_in_drawer", "wrong_object_wp1"),
+    ("slide_block_to_target", "grasp_wp0"),
+})
+
+
 EXCLUDED_CHECKPOINTS = {
     ("pick_up_cup", "wrong_object_wp1"): frozenset({1, 2}),
 }
 
 
 def checkpoint_excluded(episode: dict, wp: int) -> bool:
-    return wp in EXCLUDED_CHECKPOINTS.get((episode["task"], episode["case"]), ())
+    key = (episode["task"], episode["case"])
+    return key in EXCLUDED_EPISODES or wp in EXCLUDED_CHECKPOINTS.get(key, ())
 
 
 def write_samples(episodes, out: Path) -> int:
@@ -926,7 +721,8 @@ def write_frames(episodes, out: Path) -> None:
         writer.writerow(["task", "failure_condition", "injection_frame"]
                         + [f"{m}_alarm_frame" for m in METHODS])
         for episode in episodes:
-            if episode["failure"] == "clean":
+            if ((episode["task"], episode["case"]) in EXCLUDED_EPISODES
+                    or episode["failure"] == "clean"):
                 continue
             floor = 0 if episode["inj_wp"] is None else episode["inj_wp"]
             cells = []
@@ -949,18 +745,13 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bt-root", type=Path, default=DEFAULT_BT_ROOT,
                         help="root of the A1..A4 BT runs")
-    parser.add_argument("--grid-root", type=Path, default=DEFAULT_GRID_ROOT,
-                        help="root of the B2 GPT baseline grids")
+
     parser.add_argument("--tasks", nargs="+", default=None,
                         help="tasks to include; default: every task directory "
                              "found under --bt-root")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    parser.add_argument("--grid-csv", default="",
-                        help="exact baseline result filename to use inside each "
-                             "case folder; default: newest CSV with the "
-                             "assessor's schema, whatever it is named")
-    parser.add_argument("--keep-na", action="store_true",
-                        help="keep episodes whose injection could not manifest")
+
+
     args = parser.parse_args()
 
     tasks = args.tasks
@@ -970,25 +761,20 @@ def main():
             sys.exit(f"no task directories under {args.bt_root}")
         print(f"   {len(tasks)} task(s) under {args.bt_root}: {', '.join(tasks)}")
 
-    episodes = load_all(args.bt_root, args.grid_root, tasks, args.grid_csv)
+    episodes = load_all(args.bt_root, tasks)
     if not episodes:
         sys.exit(f"no episodes found under {args.bt_root}")
 
     dropped = [e for e in episodes if e["na"]]
-    if not args.keep_na:
-        episodes = [e for e in episodes if not e["na"]]
-        for episode in dropped:
-            print(f"   dropped {episode['task']}/{episode['case']}: {episode['na']}")
+    episodes = [e for e in episodes if not e["na"]]
+    for episode in dropped:
+        print(f"   dropped {episode['task']}/{episode['case']}: {episode['na']}")
 
     missing = defaultdict(list)
     for episode in episodes:
         for method in METHODS:
             if episode["alarms"][method] is None:
                 missing[method].append(f"{episode['task']}/{episode['case']}")
-    odd = sorted({e["b2_source"] for e in episodes
-                  if e["b2_source"] and e["b2_source"] != "vlm_result.csv"})
-    if odd:
-        print(f"   B2 read from non-default result file(s): {', '.join(odd)}")
     for method, cases in missing.items():
         print(f"   {method}: no result for {len(cases)} episode(s) "
               f"-> empty cells ({', '.join(cases[:4])}"

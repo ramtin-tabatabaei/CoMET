@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import sys
 from aha_publish import paths
-from aha_publish.common.tasks import validate_task
+from aha_publish.simulation.tasks import validate_task
 
 
 def parser(description, tasks=False):
@@ -42,7 +42,6 @@ def environment():
     env['AHA_WP_CHAIN_DIR'] = str(paths.TTM_CONTEXT_DIR)
     env['AHA_RLBENCH_TASKS_DIR'] = str(paths.RLBENCH_ROOT / 'rlbench/tasks')
     for variable, folder in (
-        ('AHA_TORQUE_STATS_DIR', 'torque_stats'),
         ('AHA_RESIDUAL_STATS_DIR', 'residual_stats'),
         ('AHA_TRANSITION_STATS_DIR', 'transition_arrival_stats'),
         ('AHA_ORIENTATION_STATS_DIR', 'orientation_arrival_stats'),

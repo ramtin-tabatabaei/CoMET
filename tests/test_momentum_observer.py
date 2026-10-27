@@ -1,5 +1,7 @@
 """Simulator-free observer regression tests: python -m unittest <module>."""
 import os
+import json
+from pathlib import Path
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -13,7 +15,7 @@ from aha_publish.detectors.collision import detector as det
 class MomentumObserverTests(unittest.TestCase):
     def setUp(self):
         env = patch.dict(os.environ, {
-            'AHA_COLLISION_METHOD': '3', 'AHA_COLLISION_MOMENTUM_VERSION': '2',
+            'AHA_COLLISION_MOMENTUM_VERSION': '1',
         })
         env.start()
         self.addCleanup(env.stop)
@@ -40,10 +42,9 @@ class MomentumObserverTests(unittest.TestCase):
             logs = self.rows(30, moving)
             det.update_momentum_observer(logs, gain=25, dt=.05)
             actual = np.array([r['mo_residual'][0] for r in logs])
-            expected = 4 * (1 - (1 / 2.25) ** np.arange(30))
+            expected = 4 * (1 - (-0.25) ** np.arange(30))
             np.testing.assert_allclose(actual, expected, atol=1e-12)
-            self.assertTrue(np.all(np.diff(actual) >= -1e-12))
-            self.assertLessEqual(actual.max(), 4 + 1e-12)
+            self.assertLessEqual(np.abs(actual[-1] - 4), 1e-12)
 
     def test_incremental_trimmed_and_idempotent(self):
         full = self.rows(12, moving=True)
@@ -63,14 +64,16 @@ class MomentumObserverTests(unittest.TestCase):
             np.testing.assert_allclose([r['mo_residual'][0] for r in logs],
                                        [0, 5, 3.75, 4.0625])
 
-    def test_calibration_isolated(self):
+    def test_calibration_parameters_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
-            with patch.dict(os.environ, {'AHA_COLLISION_MOMENTUM_VERSION': '1'}):
-                v1 = det.save_residual_stats('task', np.ones(7), directory)
-            self.assertIsNone(det.load_residual_stats('task', directory))
-            v2 = det.save_residual_stats('task', np.full(7, 2), directory)
-            self.assertNotEqual(v1, v2)
-            np.testing.assert_array_equal(det.load_residual_stats('task', directory), 2)
+            (Path(directory) / 'task_residual_stats.json').write_text(json.dumps({
+                'task': 'task', 'observer_version': '1',
+                'gain': det.DEFAULT_MOMENTUM_GAIN, 'dt': det.DEFAULT_MOMENTUM_DT,
+                'per_joint_max': [1.0] * 7,
+            }))
+            np.testing.assert_array_equal(det.load_residual_stats('task', directory), 1)
+            with patch.object(det, 'DEFAULT_MOMENTUM_GAIN', 30):
+                self.assertIsNone(det.load_residual_stats('task', directory))
 
     def test_invalid_parameters_and_version_change(self):
         for gain, dt in ((0, .05), (25, -1), (float('nan'), .05)):
@@ -78,8 +81,8 @@ class MomentumObserverTests(unittest.TestCase):
                 det.update_momentum_observer(self.rows(2), gain=gain, dt=dt)
         logs = self.rows(2)
         det.update_momentum_observer(logs)
-        with patch.dict(os.environ, {'AHA_COLLISION_MOMENTUM_VERSION': '1'}):
-            with self.assertRaises(ValueError):
+        with patch.dict(os.environ, {'AHA_COLLISION_MOMENTUM_VERSION': '2'}):
+            with self.assertRaisesRegex(ValueError, 'Only momentum observer version 1'):
                 det.update_momentum_observer(logs)
 
 
