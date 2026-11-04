@@ -56,9 +56,9 @@ def environment():
     return env
 
 
-def run(module, arguments=(), dry_run=False, env=None):
+def run(module, arguments=(), dry_run=False, env=None, *, announce=True):
     command = [sys.executable, '-m', 'aha_publish.' + module, *command_arguments(arguments)]
-    execute(command, dry_run, env)
+    execute(command, dry_run, env, announce=announce)
 
 
 def command_arguments(arguments):
@@ -73,8 +73,9 @@ def run_stage(stage, arguments=(), dry_run=False):
     execute(command, dry_run)
 
 
-def execute(command, dry_run=False, env=None):
-    print(shlex.join(command), flush=True)
+def execute(command, dry_run=False, env=None, *, announce=True):
+    if announce or dry_run:
+        print(shlex.join(command), flush=True)
     if not dry_run:
         subprocess.run(command, env=env or environment(), cwd=paths.PROJECT_ROOT,
                        check=True, stdin=subprocess.DEVNULL)

@@ -57,8 +57,8 @@
   "hold_detector_labels": {
     "maintains_grasp violated / slip detector fires": "Slip",
     "no_collision violated / collision detector fires": "collision",
-    "orientation_maintained violated / orientation detector fires": "WrongOrientation",
-    "reaches_waypoint violated / transition detector fires": "Wrongtransition"
+    "correct_orientation_during_motion violated / orientation detector fires": "WrongOrientation",
+    "correct_transition_during_motion violated / transition detector fires": "Wrongtransition"
   },
   "note": "Grasp versus Slip is inferred from the stage, not proof of when the object was lost. These are condition-scoring rules and individual detector labels; VLM confirmation and combined-method precedence are separate."
 }

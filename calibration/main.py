@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from aha_publish import paths
 from aha_publish.commands import entry, environment, parser, require, run
 from aha_publish.calibration.settings import DEFAULT_SETTINGS, compute_arguments, detector_environment, load_settings
+from aha_publish.calibration.parallel import default_workers
 from aha_publish.simulation.tasks import validate_task
 
 
@@ -14,7 +15,8 @@ def main():
     p.add_argument('action', choices=['collect', 'compute', 'all'])
     p.add_argument('--task', action='append', help='Task name; repeat to select several. Default: all available tasks.')
     p.add_argument('--episodes', type=int, default=10, help='Clean episodes per task for collect/all.')
-    p.add_argument('--workers', type=int, default=1)
+    p.add_argument('--workers', type=int, default=default_workers(),
+                   help='Parallel simulators, including episodes of one task. Default: auto, up to 8 based on CPU/RAM; use 1 for sequential collection.')
     p.add_argument('--force', action='store_true', help='Collect fresh clean episodes, replacing this task\'s previous baseline.')
     p.add_argument('--config', type=Path, default=DEFAULT_SETTINGS)
     p.add_argument('--raw-dir', type=Path, help='Read previously collected clean_data from another location (compute only).')
@@ -50,7 +52,7 @@ def main():
         if args.force and not args.dry_run:
             for task in tasks:
                 (paths.CALIBRATION_DIR / 'manifests' / f'{task}.json').unlink(missing_ok=True)
-        run('calibration.calibrate_all_clean', options, args.dry_run, env)
+        run('calibration.calibrate_all_clean', options, args.dry_run, env, announce=False)
     if not args.dry_run:
         from aha_publish.calibration.artifacts import validate_raw
         for task in tasks:
@@ -58,7 +60,8 @@ def main():
             from aha_publish.calibration.residuals import expected_parameters, load_envelopes
             load_envelopes(raw, task, expected_parameters(config['collision']))
     if args.action in ('compute', 'all'):
-        options = ['--out-root', paths.CALIBRATION_DIR, '--raw-dir', raw, *compute_arguments(config)]
+        options = ['--out-root', paths.CALIBRATION_DIR, '--raw-dir', raw,
+                   '--defer-summary', *compute_arguments(config)]
         for task in tasks:
             options += ['--task', task]
         # Invalidate old manifests before replacing calibration files, so a
@@ -66,13 +69,19 @@ def main():
         if not args.dry_run:
             for task in tasks:
                 (paths.CALIBRATION_DIR / 'manifests' / f'{task}.json').unlink(missing_ok=True)
-        run('calibration.compute_thresholds', options, args.dry_run, env)
+        run('calibration.compute_thresholds', options, args.dry_run, env, announce=False)
         if not args.dry_run:
             from aha_publish.calibration.artifacts import finalize
             for task in tasks:
                 finalize(task, raw, config)
-            print(f'Calibration and runtime settings saved in {paths.CALIBRATION_DIR}')
+            from aha_publish.calibration.compute_thresholds import print_threshold_summary
+            print_threshold_summary(paths.CALIBRATION_DIR, tasks)
+            print(f'\nCalibration complete | {len(tasks)} task(s)\n  Baselines and runtime settings: {paths.CALIBRATION_DIR}\n', flush=True)
 
 
 if __name__ == '__main__':
-    entry(main)
+    try:
+        entry(main)
+    except KeyboardInterrupt:
+        print('\nCalibration cancelled.', file=sys.stderr)
+        raise SystemExit(130)

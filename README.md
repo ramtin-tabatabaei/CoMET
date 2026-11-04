@@ -179,6 +179,21 @@ repeated `--task` arguments. Without a task selection, calibration `collect` and
 `all` discover configured task YAMLs; `compute` discovers recorded clean data.
 Use `--workers` on calibration and execution to control simulator concurrency.
 
+To open an existing BT in the web interface without regenerating it:
+
+```bash
+python 03_behavior_trees/main.py --task basketball_in_hoop --no-auto-generate
+```
+
+This requires a saved BT in `outputs/behavior_trees/` and accepts one task.
+
+Stage 4 shows live waypoint progress, pre/postcondition verdicts, and a compact
+detector-results table for each episode. Detailed simulator output and condition
+evidence are retained in `outputs/runs/<task>/<case>/run.log` for inspection and
+scoring. Completed cases are reused unless `--redo` is supplied.
+Detector plots are saved as PNG and SVG, with shared waypoint labels, separate
+collision panels for each joint, and legends outside the data area.
+
 Stage 2 captures waypoint images and gripper sequences before generating the
 description. `--reuse-evidence` reuses previously captured evidence in the
 configured output directory:
@@ -277,6 +292,14 @@ The BT generator receives the complete task description. Existing failure links
 retain their supplied names. Conditions without a failure link are matched to
 catalogue predicates; unmatched conditions remain unlinked.
 
+In BT Condition Studio, edit conditions directly or enter a request under
+**What is missing in this stage?** and click **Update stage** to have the model
+edit, add, or remove conditions for that stage. Other stages and unsaved edits
+are retained. Changing a stage's primitive offers to regenerate its preconditions
+and postconditions or keep them; hold detectors always follow the selected
+primitive. Click **Save Review** to save the changes. Stage updates do not change
+the source task description.
+
 ### Runtime configuration files
 
 | File | Purpose |
@@ -318,8 +341,19 @@ python calibration/main.py collect --task basketball_in_hoop --episodes 10
 python calibration/main.py compute --task basketball_in_hoop
 ```
 
-`collect` records clean telemetry and resumes completed episodes. `compute`
+`collect` records clean telemetry and reuses complete task baselines. `compute`
 recalculates thresholds from recorded data. `all` performs both operations.
+Collection automatically runs up to 8 simulator processes, bounded by available
+CPU and memory. Episodes of the same task run in parallel too. Each simulator
+collects its own batch in an isolated directory; complete, validated batches are
+merged into the task baseline. The terminal shows episode progress and elapsed
+time. Detailed simulator output is saved under `outputs/calibration/logs/`.
+Use `--workers 1` for sequential collection or set a specific parallel limit:
+
+```bash
+python calibration/main.py all --task basketball_in_hoop --episodes 10 --workers 4
+```
+
 Use `--force` with `collect` or `all` to replace an existing clean baseline:
 
 ```bash

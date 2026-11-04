@@ -10,14 +10,6 @@ def analyze_task(task_paths: TaskInputs, args: argparse.Namespace, client) -> tu
     waypoints = discover_waypoints(task_paths, args)
     text_payload = build_text_payload(task_paths, args, waypoints)
 
-    if args.write_prompt:
-        prompt_path = Path(args.write_prompt).expanduser()
-        if args.all:
-            prompt_path = prompt_path.with_name(
-                f"{prompt_path.stem}.{task_paths.task_name}{prompt_path.suffix}"
-            )
-        prompt_path.write_text(text_payload)
-
     if args.dry_run:
         return {
             "task": task_paths.task_name,

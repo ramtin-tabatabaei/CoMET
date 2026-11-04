@@ -6,8 +6,28 @@ import json
 import math
 import os
 from pathlib import Path
+import threading
 
 from aha_publish import paths
+
+_PLOT_LOCK = threading.RLock()
+_INK = '#172033'
+_MUTED = '#64748b'
+_BLUE = '#2563eb'
+_TEAL = '#0f766e'
+_AMBER = '#b45309'
+_RED = '#dc2626'
+_STYLE = {
+    'font.family': 'DejaVu Sans', 'font.size': 10,
+    'text.color': _INK, 'axes.labelcolor': _MUTED,
+    'axes.edgecolor': '#cbd5e1', 'axes.linewidth': .8,
+    'xtick.color': _MUTED, 'ytick.color': _MUTED,
+    'xtick.labelsize': 9, 'ytick.labelsize': 9,
+    'axes.spines.top': False, 'axes.spines.right': False,
+    'legend.frameon': False, 'legend.fontsize': 9,
+    'lines.linewidth': 1.9, 'svg.fonttype': 'none',
+    'figure.facecolor': 'white', 'axes.facecolor': 'white',
+}
 
 
 def _read_rows(path):
@@ -27,17 +47,75 @@ def _write_csv(path, rows):
 @contextmanager
 def _figure(path, *args, **kwargs):
     import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(*args, **kwargs)
-    try:
-        yield fig, axes
-        fig.tight_layout()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=160)
-    finally:
-        plt.close(fig)
+    # Matplotlib's global style and pyplot state are shared by batch threads.
+    with _PLOT_LOCK, matplotlib.rc_context(_STYLE):
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import MaxNLocator
+        fig, axes = plt.subplots(*args, **kwargs)
+        height = fig.get_figheight()
+        fig.subplots_adjust(left=.085, right=.975, bottom=.95 / height, top=1 - 1.55 / height,
+                            hspace=.30, wspace=.24)
+        for ax in fig.axes:
+            ax.set_axisbelow(True)
+            ax.grid(axis='y', color='#e8edf3', linewidth=.7)
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=8, integer=True))
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+            ax.tick_params(length=3, pad=6)
+            ax.margins(x=.01, y=.12)
+        try:
+            yield fig, axes
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(path, dpi=180, facecolor='white')
+            fig.savefig(path.with_suffix('.svg'), facecolor='white')
+        finally:
+            plt.close(fig)
+
+
+def _heading(fig, title, task, label, detail):
+    case = 'Clean run' if label == 'clean' else label.replace('_', ' ')
+    height = fig.get_figheight()
+    fig.text(.085, 1 - .25 / height, title, fontsize=19, fontweight='bold', va='top')
+    fig.text(.085, 1 - .62 / height, f'{task.replace("_", " ").capitalize()}  /  {case}  /  {detail}',
+             color=_MUTED, fontsize=10, va='top')
+
+
+def _legend(fig, handles, labels, ncol=4):
+    fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(.079, 1 - .88 / fig.get_figheight()),
+               ncol=ncol, handlelength=2.6, columnspacing=2, borderaxespad=0)
+
+
+def _waypoint_strip(fig, boundaries, limits, *, flagged=(), injected=None, bounds=(.085, .89)):
+    if not boundaries:
+        return
+    height = fig.get_figheight()
+    left, width = bounds
+    strip = fig.add_axes([left, 1 - 1.33 / height, width, .16 / height])
+    strip.set_xlim(*limits)
+    strip.set_ylim(0, 1)
+    strip.set_axis_off()
+    for index, (waypoint, start) in enumerate(boundaries):
+        end = boundaries[index + 1][1] if index + 1 < len(boundaries) else limits[1]
+        color = _RED if waypoint in flagged else '#7c3aed' if waypoint == injected else _MUTED
+        strip.axvspan(start, end, color=color, alpha=.09 if index % 2 == 0 else .04, linewidth=0)
+        strip.text((start + end) / 2, .5, f'WP {waypoint}', ha='center', va='center',
+                   color=color, fontsize=8, fontweight='medium', clip_on=True)
+
+
+def _guides(axes, boundaries, *, injected=None):
+    for ax in axes:
+        for waypoint, start in boundaries[1:]:
+            ax.axvline(start, color='#7c3aed' if waypoint == injected else '#cbd5e1',
+                       linewidth=.8, alpha=.65, zorder=0)
+
+
+def _limits(frames):
+    return (frames[0] - .5, frames[-1] + .5)
+
+
+def _footer(fig, text):
+    fig.text(.085, .15 / fig.get_figheight(), text, fontsize=8.5, color=_MUTED, va='bottom')
 
 
 def _waypoint_boundaries(rows):
@@ -67,30 +145,35 @@ def _plot_pose(path, rows, task, label, detector, fired_waypoints):
     stats = baseline.get("arrival_stats_by_waypoint", {})
     thresholds = [stats.get(str(wp), {}).get("threshold", float("nan")) for wp in waypoints]
 
-    with _figure(path, 2, 1, figsize=(12, 7), sharex=True) as (fig, axes):
-        fig.suptitle(f"{task} {label}: {detector} telemetry")
-        axes[0].plot(frames, values, label="error to target")
+    boundaries = [(wp, index) for index, wp in enumerate(waypoints)
+                  if index == 0 or wp != waypoints[index - 1]]
+    with _figure(path, 2, 1, figsize=(13, 7.5), sharex=True,
+                 gridspec_kw={'height_ratios': [2, 1]}) as (fig, axes):
+        _heading(fig, f'{detector.capitalize()} during motion', task, label,
+                 f'{len(rows):,} recorded frames')
+        axes[0].plot(frames, values, color=_BLUE, label='Target error')
+        axes[0].fill_between(frames, values, 0, color=_BLUE, alpha=.055)
         if stats:
             axes[0].step(frames, thresholds, where="post", linestyle="--",
-                         label="calibrated arrival threshold (checked at arrival)")
+                         color=_AMBER, linewidth=1.5, label='Arrival tolerance')
         arrivals = [i for i, row in enumerate(rows) if int(row.get("path_done") or 0)]
-        axes[0].scatter(arrivals, [values[i] for i in arrivals], s=15, label="path complete")
-        axes[0].set_ylabel(f"target error ({unit})")
+        axes[0].scatter(arrivals, [values[i] for i in arrivals], s=40, color=_BLUE,
+                        edgecolors='white', linewidths=1.2, zorder=5, label='Waypoint arrival')
+        axes[0].set_ylabel(f'{"Orientation" if orientation else "Position"} error ({unit})', labelpad=12)
         axes[1].plot(frames, [float(row.get(motion_key) or "nan") for row in rows],
-                     label="motion per recorded frame")
-        axes[1].set_ylabel(f"motion ({unit}/frame)")
-        axes[1].set_xlabel("recorded frame")
-        for i, waypoint in enumerate(waypoints):
-            if i and waypoint == waypoints[i - 1]:
-                continue
-            flagged = waypoint in (fired_waypoints or ())
-            for ax in axes:
-                ax.axvline(i, color="red" if flagged else "gray", alpha=0.35)
-                ax.text(i, 0.98, f"wp{waypoint}" + (" (flagged)" if flagged else ""),
-                        transform=ax.get_xaxis_transform(), rotation=90, va="top", fontsize=8)
+                     color=_TEAL, linewidth=1.7)
+        axes[1].set_ylabel(f'Motion ({unit}/frame)', labelpad=12)
+        axes[1].set_xlabel('Recorded frame', labelpad=10)
         for ax in axes:
-            ax.grid(alpha=0.25)
-            ax.legend(loc="upper right", fontsize=8)
+            ax.set_ylim(bottom=0)
+            ax.set_xlim(*_limits(frames))
+        _guides(axes, boundaries)
+        _waypoint_strip(fig, boundaries, _limits(frames), flagged=fired_waypoints or ())
+        _legend(fig, *axes[0].get_legend_handles_labels(), ncol=3)
+        note = 'Tolerance is checked at waypoint arrival; errors can be larger while moving toward the target.'
+        if fired_waypoints:
+            note += '  Red waypoint labels indicate detections.'
+        _footer(fig, note)
 
 
 def _number(row, key):
@@ -107,46 +190,51 @@ def _plot_slip(path, rows, task, label):
     fired = sorted({int(row["step"]) for row in rows if row["slip_fired"]})
     drop_fraction = float(os.getenv("AHA_SLIP_DROP_FRAC", "0.8"))
     peaks = [_number(row, "held_peak") for row in rows]
-    peak_steps = [step for step, peak in zip(steps, peaks) if peak and peak > 0]
-    peak_values = [peak for peak in peaks if peak and peak > 0]
+    peak_values = [peak if peak is not None and peak > 0 else float('nan') for peak in peaks]
+    boundaries = _waypoint_boundaries(rows)
 
-    with _figure(path, 1, 1, figsize=(12, 5)) as (fig, ax):
-        fig.suptitle(f"{task} {label}: slip telemetry (proportional grip collapse)")
-        ax.plot(steps, grip, label="grip_force", color="#2563eb")
-        if peak_steps:
-            ax.plot(peak_steps, peak_values, label="held peak", color="#10b981",
-                    linestyle=":", alpha=0.8)
-            ax.plot(peak_steps, [(1 - drop_fraction) * peak for peak in peak_values],
-                    label=f"slip level ({int(drop_fraction * 100)}% drop)",
-                    color="#a855f7", linestyle="--", alpha=0.8)
-        ax.set_ylabel("grip_force")
-        ax.grid(True, alpha=0.25)
-        ax.set_xlabel("frame / detector step")
+    with _figure(path, 1, 1, figsize=(13, 5.5)) as (fig, ax):
+        _heading(fig, 'Grasp stability', task, label, f'{len(rows):,} recorded frames')
+        ax.plot(steps, grip, label='Grip force', color=_BLUE, zorder=3)
+        ax.fill_between(steps, grip, 0, color=_BLUE, alpha=.055)
+        if any(peak is not None and peak > 0 for peak in peaks):
+            ax.plot(steps, peak_values, label='Held-force peak', color=_TEAL,
+                    linestyle=':', linewidth=1.6)
+            ax.plot(steps, [(1 - drop_fraction) * peak for peak in peak_values],
+                    label=f'Slip level ({drop_fraction:.0%} drop)',
+                    color=_AMBER, linestyle='--', linewidth=1.5)
+        ax.set_ylabel('Grip force (N)', labelpad=12)
+        ax.set_xlabel('Detector step', labelpad=10)
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(*_limits(steps))
 
-        for waypoint, step in _waypoint_boundaries(rows):
-            ax.axvline(step, color="#7c3aed", linestyle="--", alpha=0.35)
-            ax.text(step, 0.98, f"wp{waypoint}", transform=ax.get_xaxis_transform(),
-                    rotation=90, va="top", ha="right", fontsize=8, color="#7c3aed")
-        for key, text, color, alpha, alignment in (
-            ("gripper_close_cmd", "close cmd", "#0891b2", 0.8, "right"),
-            ("gripper_open_cmd", "open cmd", "#16a34a", 0.7, "left"),
-        ):
+        # Shade contiguous intervals, instead of drawing a rectangle per frame.
+        inactive = None
+        for index in range(len(rows) + 1):
+            not_required = index < len(rows) and not rows[index]['holding_required_phase']
+            if not_required and inactive is None:
+                inactive = index
+            if not not_required and inactive is not None:
+                end = steps[index] - .5 if index < len(rows) else steps[-1] + .5
+                ax.axvspan(steps[inactive] - .5, end, color='#e2e8f0', alpha=.4,
+                           linewidth=0, zorder=0)
+                inactive = None
+        for key, text in (('gripper_close_cmd', 'Close'), ('gripper_open_cmd', 'Open')):
             for row in rows:
                 if _number(row, key) == 1:
                     step = int(row["step"])
-                    ax.axvline(step, color=color, linestyle="-", alpha=alpha)
-                    ax.text(step, 0.98, text, transform=ax.get_xaxis_transform(),
-                            rotation=90, va="top", ha=alignment, fontsize=8, color=color)
-        for row in rows:
-            step = int(row["step"])
-            if not row["holding_required_phase"]:
-                ax.axvspan(step - 0.5, step + 0.5, color="#e5e7eb", alpha=0.18, linewidth=0)
-            if row["path_done"]:
-                ax.axvline(step, color="#64748b", linestyle=":", alpha=0.18)
+                    ax.axvline(step, color=_MUTED, linestyle='--', linewidth=.8, alpha=.65)
+                    ax.annotate(text, xy=(step, .04), xytext=(5, 3),
+                                xycoords=ax.get_xaxis_transform(), textcoords='offset points',
+                                fontsize=8, color=_INK,
+                                bbox={'facecolor': 'white', 'edgecolor': '#e2e8f0', 'pad': 3})
         for index, step in enumerate(fired):
-            ax.axvline(step, color="#dc2626", linestyle="-", linewidth=1.8,
-                       alpha=0.9, label="slip fired" if index == 0 else None)
-        ax.legend(loc="upper right", fontsize=8)
+            ax.axvline(step, color=_RED, linewidth=1.3, alpha=.8,
+                       label='Slip trigger' if index == 0 else None)
+        _guides([ax], boundaries)
+        _waypoint_strip(fig, boundaries, _limits(steps))
+        _legend(fig, *ax.get_legend_handles_labels())
+        _footer(fig, 'Gray intervals: grasp is not required.  Close / Open markers show commanded gripper actions.')
 
 
 def _collision_fired_steps(rows):
@@ -167,38 +255,74 @@ def _plot_collision(path, rows, task, label, waypoint_frames, injected_waypoint)
     steps = [int(row["step"]) for row in rows]
     fired = _collision_fired_steps(rows)
 
-    with _figure(path, 1, 1, figsize=(11, 6)) as (fig, ax):
-        from matplotlib import cm
+    with _figure(path, 4, 2, figsize=(13, 10), sharex=True) as (fig, grid):
+        from matplotlib.lines import Line2D
 
-        fig.suptitle(f"{task} {label}: De Luca generalized-momentum observer "
-                     f"(collision method 3, fire when >= {minimum_joints} joints over)")
-        colors = cm.tab10([joint / 6 for joint in range(7)])
+        _heading(fig, 'Collision monitoring', task, label,
+                 f'De Luca momentum observer  /  {len(rows):,} recorded frames')
+        fig.subplots_adjust(hspace=.52, wspace=.23)
+        axes = list(grid.flat)
+        recorded_limits = False
+        any_limits = False
         for joint in range(7):
-            values = [abs(float(row.get(f"r{joint}") or 0.0)) for row in rows]
-            ax.plot(steps, values, color=colors[joint], linewidth=1.2, label=f"|r{joint + 1}|")
-            if thresholds is not None:
-                ax.axhline(thresholds[joint], color=colors[joint], linestyle=":",
-                           linewidth=1.0, alpha=0.7)
-        ax.set_ylabel("per-joint residual |r_i|  (Nm)")
-        ax.set_xlabel("frame / simulator step")
-        ax.legend(loc="upper left", fontsize=7, ncol=7, title="dotted = per-joint threshold")
-        for waypoint, frame in waypoint_frames:
-            injected = injected_waypoint is not None and waypoint == injected_waypoint
-            color = "#dc2626" if injected else "#9ca3af"
-            ax.axvline(frame, color=color, linestyle="-", alpha=0.8 if injected else 0.4,
-                       linewidth=1.3)
-            ax.text(frame, ax.get_ylim()[1], f"wp{waypoint}", color=color,
-                    fontsize=8, va="bottom", ha="center")
-        for step in fired:
-            ax.axvline(step, color="#000000", linestyle=":", alpha=0.3)
+            ax = axes[joint]
+            values = [abs(value) if (value := _number(row, f'r{joint}')) is not None
+                      else float('nan') for row in rows]
+            ax.plot(steps, values, color=_BLUE, linewidth=1.6)
+            ax.fill_between(steps, values, 0, color=_BLUE, alpha=.055)
+            # A replot should use the limits recorded during this run, even if
+            # the current calibration settings have since changed.
+            limits = [_number(row, f'rthr{joint}') for row in rows]
+            if any(value is not None for value in limits):
+                recorded_limits = True
+                limits = [value if value is not None else float('nan') for value in limits]
+            elif thresholds is not None:
+                limits = [float(thresholds[joint])] * len(rows)
+            else:
+                limits = [float('nan')] * len(rows)
+            finite_limits = [value for value in limits if math.isfinite(value)]
+            if finite_limits:
+                any_limits = True
+                ax.step(steps, limits, where='post', color=_AMBER,
+                        linestyle='--', linewidth=1.3)
+                ax.text(.99, 1.035, f'Limit {finite_limits[-1]:.2f} Nm',
+                        transform=ax.transAxes, ha='right', fontsize=8, color=_AMBER)
+            ax.set_title(f'Joint {joint + 1}', loc='left', fontsize=10, fontweight='bold', pad=7)
+            ax.set_ylabel('|Residual| (Nm)', fontsize=9, labelpad=8)
+            ax.set_xlim(*_limits(steps))
+            ax.set_ylim(bottom=0)
+            if fired:
+                ax.axvline(min(fired), color=_RED, linewidth=1, alpha=.75)
+        # The last panel is a reading guide, leaving seven uncluttered signals.
+        axes[7].set_axis_off()
+        axes[7].text(0, .93, 'Observer summary', fontsize=11, fontweight='bold', transform=axes[7].transAxes)
+        threshold_source = ('Recorded per frame' if recorded_limits else
+                            'Calibration fallback' if thresholds is not None else 'Unavailable')
+        axes[7].text(0, .70, f'Trigger: at least {minimum_joints} joint(s) over their limit.',
+                     fontsize=9, color=_MUTED, transform=axes[7].transAxes, va='top')
+        axes[7].text(0, .48, f'{len(fired)} raw trigger frames  /  Thresholds: {threshold_source.lower()}',
+                     fontsize=9, color=_MUTED, transform=axes[7].transAxes, va='top')
+        axes[7].text(0, .04, 'Each joint has its own y-axis scale.\n'
+                     'Raw triggers precede any VLM confirmation.', fontsize=8.5,
+                     color=_MUTED, transform=axes[7].transAxes, va='bottom')
+        for index in (5, 6):
+            axes[index].tick_params(labelbottom=True)
+            axes[index].set_xlabel('Simulator step', labelpad=8)
+        _guides(axes[:7], waypoint_frames, injected=injected_waypoint)
+        for ax in axes[:2]:
+            position = ax.get_position()
+            _waypoint_strip(fig, waypoint_frames, _limits(steps), injected=injected_waypoint,
+                            bounds=(position.x0, position.width))
+        handles = [Line2D([], [], color=_BLUE, linewidth=1.8)]
+        labels = ['Absolute joint residual']
+        if any_limits:
+            handles.append(Line2D([], [], color=_AMBER, linestyle='--', linewidth=1.3))
+            labels.append('Per-joint threshold')
         if fired:
-            first = min(fired)
-            previous = [waypoint for waypoint, start in waypoint_frames if start <= first]
-            waypoint_text = f" (wp{previous[-1]})" if previous else ""
-            ax.axvline(first, color="#ef4444", linestyle="-", linewidth=2.4, alpha=0.95,
-                       label=f"first detection @ frame {first}{waypoint_text}")
-            ax.legend(loc="upper left", fontsize=7, ncol=7)
-        ax.grid(True, alpha=0.25)
+            handles.append(Line2D([], [], color=_RED, linewidth=1.2))
+            labels.append('First raw trigger')
+        _legend(fig, handles, labels, ncol=3)
+        _footer(fig, 'Waypoint boundaries are shared across panels.  Purple waypoint labels mark the collision injection, when present.')
 
 
 def render_plots(case_dir, task, label, drift, info, *, failure="none", waypoint=None):

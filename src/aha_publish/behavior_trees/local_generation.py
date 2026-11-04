@@ -20,6 +20,7 @@ def extract_task_stages(task_context: dict) -> list[dict]:
         stages.append(
             {
                 "stage": stage_number,
+                "primitive": stage.get("primitive"),
                 "summary": " ".join(part for part in summary_parts if part)
                 or stage.get("name")
                 or f"Waypoint {stage_number}",

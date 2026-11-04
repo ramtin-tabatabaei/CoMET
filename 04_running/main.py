@@ -38,8 +38,11 @@ def main():
         options += ["--vlm-model", args.model]
     if args.redo:
         options += ["--redo"]
-    run("running.bt_runner", options, args.dry_run, env=env)
+    run("running.bt_runner", options, args.dry_run, env=env, announce=False)
 
 
 if __name__ == "__main__":
-    entry(main)
+    try:
+        entry(main)
+    except KeyboardInterrupt:
+        raise SystemExit(130)

@@ -9,11 +9,12 @@ import argparse
 import csv
 import json
 import os
-import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 import numpy as np
 
@@ -24,6 +25,8 @@ from aha_publish.detectors.slip import detector as SD
 from . import residuals
 from .artifacts import validate_raw
 from .compute_thresholds import write_json
+from .parallel import (CollectionProgress, SimulatorWorkers, collection_jobs,
+                       default_workers, elapsed_text, emit_event, merge_task_episodes)
 
 FAILGEN_ROOT = paths.FAILGEN_ROOT
 CONFIGS_PATH = paths.CONFIGS_DIR
@@ -151,7 +154,7 @@ def run_task(task, episodes, max_attempts, show_sim=False):
         record=False,
         save_data=False,
         no_failures=True,
-        save_path=str(paths.BACKEND_DATA_DIR / 'calibration'),
+        save_path=str(CALIBRATION_ROOT / 'backend_data'),
         save_keyframes_only=True,
         max_failure_attempts=max_attempts,
     )
@@ -238,7 +241,9 @@ def run_task(task, episodes, max_attempts, show_sim=False):
                 s_row["task"] = task
                 s_row["episode"] = episode
                 grip_logs.append(s_row)
-                SD.update_deltas(grip_logs)
+                # Calibration saves force/drop only; computing these needs just
+                # the preceding frame, not another scan of the whole episode.
+                SD.update_deltas(grip_logs[-2:])
 
                 c_row = CD.obs_to_row(obs, step)
                 c_row["task"] = task
@@ -266,7 +271,7 @@ def run_task(task, episodes, max_attempts, show_sim=False):
             env_wrapper.on_env_step = patched_step
             env_wrapper.on_env_waypoint_end = patched_waypoint_end
 
-            print(f"    {task} ep{episode + 1}/{episodes} running...", flush=True)
+            emit_event('episode_started', task=task, episode=episode)
             try:
                 env_wrapper.reset()
                 # Wire the waypoint-START hook so per-frame in-motion callbacks
@@ -281,8 +286,7 @@ def run_task(task, episodes, max_attempts, show_sim=False):
                 env_wrapper.on_env_waypoint_end = original_waypoint_end
 
             if demo is None:
-                print(f"    {task}: attempt {attempts} no successful demo "
-                      f"(have {completed}/{target})", flush=True)
+                emit_event('retry', task=task, attempt=attempts, completed=completed)
                 continue
 
             residuals.write_episode(RAW_DIR / task / f"ep{episode}.csv",
@@ -290,11 +294,8 @@ def run_task(task, episodes, max_attempts, show_sim=False):
             write_raw_csv(RAW_DIR / task / f"ep{episode}.csv",
                           task, episode, pose_rows, grip_logs)
             completed += 1
-            print(
-                f"    {task} ep{completed}/{target} done (attempt {attempts}): "
-                f"frames={len(torque_logs)}",
-                flush=True,
-            )
+            emit_event('episode_done', task=task, completed=completed,
+                       attempt=attempts, frames=len(torque_logs))
     finally:
         env_wrapper.shutdown()
 
@@ -326,38 +327,13 @@ def task_done(task, episodes):
         return False
 
 
-def run_one_subprocess(task, args):
-    cmd = [
-        sys.executable,
-        "-u",
-        "-m",
-        "aha_publish.calibration.calibrate_all_clean",
-        "--task",
-        task,
-        "--episodes",
-        str(args.episodes),
-        "--max-attempts",
-        str(args.max_attempts),
-        "--out-root",
-        str(args.out_root),
-    ]
-    if args.show_sim:
-        cmd.append("--show-sim")
-    if args.force:
-        cmd.append("--force")
-    env = os.environ.copy()
-    start = time.monotonic()
-    process = subprocess.run(cmd, cwd=str(paths.PROJECT_ROOT), env=env)
-    return process.returncode, round(time.monotonic() - start, 1)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", action="append", default=[],
                         help="Task to calibrate. Omit for all configured tasks.")
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--workers", type=int, default=1,
-                        help="Parallel task subprocesses. Use 10 if your machine can handle it.")
+    parser.add_argument("--workers", type=int, default=default_workers(),
+                        help="Parallel simulators, including episodes of the same task. Default: auto, up to 8 based on CPU/RAM. Use 1 for sequential collection.")
     parser.add_argument("--max-attempts", type=int, default=5)
     parser.add_argument(
         "--out-root",
@@ -368,13 +344,21 @@ def main():
     )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--show-sim", action="store_true")
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.episodes < 1 or args.workers < 1 or args.max_attempts < 1:
         parser.error('--episodes, --workers, and --max-attempts must be positive')
 
     configure_output_root(args.out_root)
     configure_env(headless=not args.show_sim)
-    tasks = args.task or available_tasks()
+    tasks = list(dict.fromkeys(args.task or available_tasks()))
+    if not tasks:
+        parser.error('No tasks found; supply --task and check the configured paths.')
+    if args.worker:
+        if len(tasks) != 1:
+            parser.error('An internal worker requires exactly one task')
+        run_task(tasks[0], args.episodes, args.max_attempts, args.show_sim)
+        return 0
 
     if args.force:
         skipped = []
@@ -385,50 +369,55 @@ def main():
         skipped = [task for task in tasks
                    if counts[task] >= args.episodes and task_done(task, args.episodes)]
         tasks_to_run = [task for task in tasks if task not in set(skipped)]
-        for task in tasks_to_run:
-            print(f"  {task:<30} has {counts[task]}/{args.episodes} — will rerun",
-                  flush=True)
-
-    print(
-        f"all-clean calibration: requested={len(tasks)} skipped={len(skipped)} "
-        f"to_run={len(tasks_to_run)} episodes={args.episodes} workers={args.workers} "
-        f"out_root={CALIBRATION_ROOT}",
-        flush=True,
-    )
     if not tasks_to_run:
-        print("nothing to do")
+        print(f'\nCalibration | reused {len(skipped)} complete task baseline(s); no collection needed.\n', flush=True)
         return 0
 
+    CALIBRATION_ROOT.mkdir(parents=True, exist_ok=True)
+    logs = CALIBRATION_ROOT / 'logs' / f'collect-{uuid4().hex[:8]}'
+    logs.mkdir(parents=True)
+    for task in tasks_to_run:
+        (CALIBRATION_ROOT / 'manifests' / f'{task}.json').unlink(missing_ok=True)
     failed = []
-    if args.workers > 1 and len(tasks_to_run) > 1:
-        done = 0
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = {
-                executor.submit(run_one_subprocess, task, args): task
-                for task in tasks_to_run
-            }
-            for future in as_completed(futures):
-                task = futures[future]
-                rc, elapsed = future.result()
-                done += 1
-                if rc == 0:
-                    print(f"  [{done}/{len(tasks_to_run)}] {task:<28} done {elapsed}s", flush=True)
-                else:
-                    failed.append((task, f"exit={rc}"))
-                    print(f"  [{done}/{len(tasks_to_run)}] {task:<28} FAIL exit={rc}", flush=True)
-    else:
-        for i, task in enumerate(tasks_to_run, 1):
+    workers = SimulatorWorkers()
+    start = time.monotonic()
+    with TemporaryDirectory(prefix='.collect-', dir=CALIBRATION_ROOT) as staging:
+        jobs = collection_jobs(tasks_to_run, args.episodes, args.workers, staging, logs)
+        concurrency = min(args.workers, len(jobs))
+        progress = CollectionProgress(tasks_to_run, args.episodes, concurrency, logs, len(skipped))
+        task_jobs = {task: [job for job in jobs if job.task == task] for task in tasks_to_run}
+        remaining = {task: len(batch) for task, batch in task_jobs.items()}
+        failed_tasks = set()
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {executor.submit(workers.run, job, args, progress): job for job in jobs}
             try:
-                print(f"  [{i}/{len(tasks_to_run)}] {task} start", flush=True)
-                result = run_task(task, args.episodes, args.max_attempts, args.show_sim)
-                print(
-                    f"  [{i}/{len(tasks_to_run)}] {task} done "
-                    f"episodes={result['episodes_completed']}",
-                    flush=True,
-                )
-            except Exception as exc:
-                failed.append((task, str(exc)))
-                print(f"  [{i}/{len(tasks_to_run)}] {task} FAIL {exc}", flush=True)
+                while futures:
+                    ready, _ = wait(futures, timeout=1, return_when=FIRST_COMPLETED)
+                    progress.refresh()
+                    for future in ready:
+                        job = futures.pop(future)
+                        try:
+                            rc = future.result()
+                            if rc:
+                                raise RuntimeError(f'worker exited with code {rc}; see {job.log}')
+                        except Exception as exc:
+                            failed_tasks.add(job.task)
+                            failed.append((job.task, str(exc)))
+                            progress.note(f'FAILED  {job.task}: {exc}')
+                        remaining[job.task] -= 1
+                        if remaining[job.task] == 0 and job.task not in failed_tasks:
+                            try:
+                                count = merge_task_episodes(job.task, task_jobs[job.task], staging,
+                                                            RAW_DIR, residuals.observer_parameters(CD))
+                                progress.note(f'SAVED   {job.task}: {count} clean episodes')
+                            except Exception as exc:
+                                failed.append((job.task, str(exc)))
+                                progress.note(f'FAILED  {job.task}: {exc}')
+            except BaseException:
+                workers.cancel()
+                progress.finish()
+                raise
+        progress.finish()
 
     if failed:
         write_json(
@@ -436,9 +425,14 @@ def main():
             [{"task": task, "error": error} for task, error in failed])
     else:
         (CALIBRATION_ROOT / "all_clean_calibration_failed_tasks.json").unlink(missing_ok=True)
-    print(f"finished: failed={len(failed)}")
+    outcome = f'{len({task for task, _ in failed})} failed task(s)' if failed else 'all tasks collected'
+    print(f'\n  Collection finished in {elapsed_text(time.monotonic() - start)} | {outcome}\n', flush=True)
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print('\nCalibration cancelled. Detailed simulator logs were retained.', file=sys.stderr)
+        raise SystemExit(130)

@@ -90,7 +90,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    parser.add_argument("--write-prompt", help="Write the assembled text prompt to this path.")
     parser.add_argument(
         '--dry-run',
         action='store_true',

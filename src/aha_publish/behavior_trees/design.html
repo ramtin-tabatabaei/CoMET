@@ -227,7 +227,7 @@
       margin-bottom: 18px;
       padding: 16px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 240px;
+      grid-template-columns: minmax(0, 1fr);
       gap: 16px;
     }
 
@@ -351,6 +351,24 @@
     .stage-primitive.is-none {
       background: #ffffff;
       color: var(--muted);
+    }
+
+    .stage-primitive option {
+      color: var(--ink);
+      background: #ffffff;
+    }
+
+    .stage-edit-actions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 10px;
+    }
+
+    .stage-edit-actions span {
+      color: var(--muted);
+      font-size: 12px;
     }
 
     .stage-summary {
@@ -487,75 +505,106 @@
       margin-top: 2px;
     }
 
-    .hold-sub {
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.01em;
-      text-transform: none;
+    .hold-count {
+      flex: none;
       color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
     }
 
     .hold-list {
-      grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+      gap: 10px;
     }
 
     .hold-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 28px;
+      align-items: start;
+      gap: 8px;
       padding: 10px 12px;
       border: 1px solid var(--line);
       border-left: 5px solid var(--amber);
       border-radius: var(--radius);
-      background: #fffdf6;
+      background: #ffffff;
     }
 
-    .hold-cond {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12.5px;
+    .hold-card-head {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 2px 10px;
+    }
+
+    .hold-title {
+      min-width: 0;
+      margin: 0;
       color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.45;
       overflow-wrap: anywhere;
     }
 
-    .hold-row-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: none;
+    .hold-description {
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .hold-timing {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .hold-details {
+      min-width: 0;
+      max-width: 100%;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .hold-details summary {
+      cursor: pointer;
+    }
+
+    .hold-details code {
+      display: block;
+      margin: 10px 0 6px;
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .hold-details span {
+      display: block;
+      line-height: 1.5;
     }
 
     .remove-hold {
+      flex: none;
       width: 28px;
       height: 28px;
       border-radius: var(--radius);
-      border: 1px solid #e2c9c1;
-      background: #fff0ec;
-      color: #8c2f20;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
       font-size: 16px;
       line-height: 1;
       display: grid;
       place-items: center;
     }
 
-    .detector-chip {
-      flex: none;
-      padding: 3px 9px;
-      border-radius: 999px;
-      background: #fdf0d2;
-      border: 1px solid #eadfc4;
-      color: #6b5618;
-      font-size: 11px;
-      font-weight: 700;
-      white-space: nowrap;
-    }
-
-    .detector-chip .chip-key {
-      font-weight: 600;
-      opacity: 0.7;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      margin-right: 2px;
+    .remove-hold:hover,
+    .remove-hold:focus-visible {
+      border-color: #e2c9c1;
+      background: #fff0ec;
+      color: #8c2f20;
     }
 
     .reason-tooltip {
@@ -703,10 +752,6 @@
 
     <section class="workspace">
       <div class="control-strip">
-        <div class="field">
-          <label for="guidance">Missing details or generation guidance</label>
-          <textarea id="guidance" placeholder="Example: add a check for ball release at the rim, or focus more on gripper contact force."></textarea>
-        </div>
         <div class="meta-stack">
           <div class="meta-pill"><strong>Provider</strong><span id="providerMeta">-</span></div>
           <div class="meta-pill"><strong>Waypoint JSON</strong><span id="taskMeta">-</span></div>
@@ -763,6 +808,9 @@
       state.busy = isBusy;
       $("#generateBtn").disabled = isBusy;
       $("#saveBtn").disabled = isBusy;
+      $("#stageWorkspace").inert = isBusy;
+      $$("#stageWorkspace button, #stageWorkspace input, #stageWorkspace select, #stageWorkspace textarea")
+        .forEach((control) => { control.disabled = isBusy; });
       if (isBusy) {
         setStatus(label);
       }
@@ -915,17 +963,26 @@
       const detector = condition?.detector || "";
       const label = condition?.label || detector || "detector";
       const definition = condition?.definition || "";
+      const timing = condition?.check_timing || "";
       const failure = condition?.failure
         || condition?.failure_links?.[0]?.failure
         || detector
         || "failure";
       return `
-        <div class="hold-row" data-detector="${escapeHtml(detector)}" data-failure="${escapeHtml(failure)}" data-condition="${escapeHtml(text)}" data-label="${escapeHtml(label)}" data-definition="${escapeHtml(definition)}" data-reason="${escapeHtml(definition)}">
-          <code class="hold-cond">${escapeHtml(text)}</code>
-          <div class="hold-row-actions">
-            <span class="detector-chip" title="${escapeHtml(label)} — fails with: ${escapeHtml(failure)}"><span class="chip-key">fails:</span> ${escapeHtml(failure)}</span>
-            <button class="remove-hold" type="button" data-remove-hold aria-label="Remove hold condition" title="Remove this hold condition">&times;</button>
+        <div class="hold-row" data-detector="${escapeHtml(detector)}" data-failure="${escapeHtml(failure)}" data-condition="${escapeHtml(text)}" data-label="${escapeHtml(label)}" data-definition="${escapeHtml(definition)}" data-check-timing="${escapeHtml(timing)}">
+          <div>
+            <div class="hold-card-head">
+              <h4 class="hold-title">${escapeHtml(label)}</h4>
+              <span class="hold-timing">${escapeHtml(timing)}</span>
+            </div>
+            <details class="hold-details">
+              <summary>Details</summary>
+              <p class="hold-description">${escapeHtml(definition)}</p>
+              <code>${escapeHtml(text)}</code>
+              <span>Failure: ${escapeHtml(failure)}</span>
+            </details>
           </div>
+          <button class="remove-hold" type="button" data-remove-hold aria-label="Remove ${escapeHtml(label)}" title="Remove this hold condition">&times;</button>
         </div>
       `;
     }
@@ -938,7 +995,8 @@
       return `
         <div class="condition-section hold-section">
           <div class="section-head">
-            <h3>Hold conditions <span class="hold-sub">· detectors active for the whole stage</span></h3>
+            <h3>Hold conditions</h3>
+            <span class="hold-count">${list.length} ${list.length === 1 ? "check" : "checks"}</span>
           </div>
           <div class="condition-list hold-list" data-list-kind="hold_conditions">${rows}</div>
         </div>
@@ -966,12 +1024,13 @@
       const stages = generatedStages.length
         ? generatedStages.map((stage) => ({
             ...stage,
-            summary: taskSummaryFor(stage.stage)
+            summary: stage.summary || taskSummaryFor(stage.stage)
           }))
         : taskStages.map((stage) => ({
             stage: stage.stage,
             name: `Stage ${stage.stage}`,
             summary: stage.summary,
+            primitive: stage.primitive,
             preconditions: [],
             postconditions: [],
             hold_conditions: []
@@ -979,14 +1038,24 @@
 
       renderStageRail(stages);
 
-      $("#stageWorkspace").innerHTML = stages.map((stage, stageIndex) => `
+      $("#stageWorkspace").innerHTML = stages.map(stageHtml).join("");
+    }
+
+    function primitiveOptionsHtml(primitive) {
+      const choices = state.bootstrap?.primitives || [];
+      return `<option value="" ${primitive ? "" : "selected"} disabled>Choose primitive</option>`
+        + choices.map((value) => `<option value="${escapeHtml(value)}" ${value === primitive ? "selected" : ""}>${escapeHtml(value)}</option>`).join("");
+    }
+
+    function stageHtml(stage, stageIndex) {
+      return `
         <section class="stage-panel" id="stage-${escapeHtml(stage.stage)}" data-stage="${escapeHtml(stage.stage)}" data-stage-name="${escapeHtml(stage.name || `Stage ${stage.stage}`)}" data-primitive="${escapeHtml(stage.primitive || "")}">
           <div class="stage-head">
             <div class="stage-number">${escapeHtml(stage.stage)}</div>
             <div>
               <div class="stage-title-row">
                 <h2 class="stage-title">${escapeHtml(stage.name || `Stage ${stage.stage}`)}</h2>
-                <span class="stage-primitive${stage.primitive ? "" : " is-none"}" title="Step-1 motion primitive for this waypoint">${escapeHtml(stage.primitive || "no primitive")}</span>
+                <select class="stage-primitive${stage.primitive ? "" : " is-none"}" aria-label="Primitive for stage ${escapeHtml(stage.stage)}">${primitiveOptionsHtml(stage.primitive)}</select>
               </div>
               <p class="stage-summary">${escapeHtml(stage.summary || "No stage summary found in the task JSON.")}</p>
             </div>
@@ -996,12 +1065,16 @@
             ${sectionHtml(stageIndex, "postconditions", "Postconditions", stage.postconditions || [])}
             ${holdSectionHtml(stage.hold_conditions || [])}
             <div class="note-field">
-              <label>What is missing in this stage?</label>
-              <textarea class="missing-note" placeholder="Describe any missing state, sensor check, geometric relation, or safety condition.">${escapeHtml(stage.missing_description || "")}</textarea>
+              <label for="stage-note-${escapeHtml(stage.stage)}">What is missing in this stage?</label>
+              <textarea id="stage-note-${escapeHtml(stage.stage)}" class="missing-note" placeholder="Ask to edit, add, or remove conditions for this stage.">${escapeHtml(stage.missing_description || "")}</textarea>
+              <div class="stage-edit-actions">
+                <button class="small-btn" type="button" data-update-stage>Update stage</button>
+                <span>Uses your instructions and selected primitive. Click Save Review to save changes.</span>
+              </div>
             </div>
           </div>
         </section>
-      `).join("");
+      `;
     }
 
     async function generateConditions() {
@@ -1009,7 +1082,7 @@
       try {
         const data = await api("/api/generate", {
           method: "POST",
-          body: JSON.stringify({ guidance: $("#guidance").value })
+          body: JSON.stringify({})
         });
         state.generated = data.result;
         renderStages();
@@ -1035,7 +1108,6 @@
       };
 
       return {
-        guidance: $("#guidance").value,
         stages: $$(".stage-panel").map((panel) => {
           const stageReview = {
             stage: parseStageValue(panel.dataset.stage),
@@ -1073,6 +1145,7 @@
             failure: row.dataset.failure || "",
             label: row.dataset.label || "",
             definition: row.dataset.definition || "",
+            check_timing: row.dataset.checkTiming || "",
             alternatives: [],
             selected: true,
             failure_links: row.dataset.failure
@@ -1083,6 +1156,62 @@
           return stageReview;
         })
       };
+    }
+
+    async function updateStage(panel, previousPrimitive = panel.dataset.primitive) {
+      if (state.busy) return;
+      const review = gatherReview();
+      const index = review.stages.findIndex((stage) => String(stage.stage) === panel.dataset.stage);
+      const stage = review.stages[index];
+      if (!stage?.primitive) {
+        showToast("Choose a primitive before updating this stage.");
+        return;
+      }
+      setBusy(true, `Updating stage ${stage.stage}...`);
+      try {
+        const data = await api("/api/revise-stage", {
+          method: "POST",
+          body: JSON.stringify({
+            stage: { ...stage, previous_primitive: previousPrimitive },
+            stages: review.stages
+          })
+        });
+        review.stages[index] = data.stage;
+        state.generated = { ...state.generated, stages: review.stages };
+        panel.outerHTML = stageHtml(data.stage, index);
+        renderStageRail(review.stages);
+        setStatus(`Updated stage ${stage.stage}. Click Save Review to save changes.`);
+        showToast(`Stage ${stage.stage} updated.`);
+      } catch (error) {
+        setStatus(`Stage update failed: ${error.message}. Your edits are kept; use Update stage to retry.`);
+        showToast("Stage update failed. Your edits are kept.");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function changePrimitive(select) {
+      const panel = select.closest(".stage-panel");
+      const previousPrimitive = panel.dataset.primitive;
+      const primitive = select.value;
+      if (primitive === previousPrimitive) return;
+      panel.dataset.primitive = primitive;
+      select.classList.remove("is-none");
+      // Detector invariants always follow the primitive, even when the user
+      // elects to retain their existing pre/postconditions.
+      const policy = state.bootstrap?.primitive_policy || {};
+      const holds = (state.bootstrap?.hold_conditions || []).filter((entry) =>
+        !Object.hasOwn(policy, entry.detector) || policy[entry.detector].includes(primitive)
+      );
+      $(".hold-section", panel).outerHTML = holdSectionHtml(holds);
+      const regenerate = window.confirm(
+        `Changed stage ${panel.dataset.stage} to ${primitive}.\n\nUpdate this stage's preconditions and postconditions for the new primitive?\n\nOK: regenerate conditions using this stage's instructions.\nCancel: keep the current preconditions and postconditions.\n\nHold detectors follow the new primitive in either case.`
+      );
+      if (regenerate) {
+        updateStage(panel, previousPrimitive);
+      } else {
+        setStatus(`Stage ${panel.dataset.stage}: primitive changed to ${primitive}; pre/postconditions kept. Click Save Review to save changes.`);
+      }
     }
 
     async function saveReview() {
@@ -1139,6 +1268,8 @@
       if (!$(".hold-row", list)) {
         list.innerHTML = `<div class="empty-state">No hold conditions.</div>`;
       }
+      const count = $$(".hold-row", list).length;
+      $(".hold-count", list.closest(".hold-section")).textContent = `${count} ${count === 1 ? "check" : "checks"}`;
       hideReasonTooltip();
       showToast("Hold condition removed.");
     }
@@ -1163,6 +1294,12 @@
       $("#saveBtn").addEventListener("click", saveReview);
 
       document.addEventListener("click", (event) => {
+        if (state.busy) return;
+        const update = event.target.closest("[data-update-stage]");
+        if (update) {
+          updateStage(update.closest(".stage-panel"));
+          return;
+        }
         const removeHold = event.target.closest("[data-remove-hold]");
         if (removeHold) {
           removeHoldCondition(removeHold);
@@ -1191,6 +1328,12 @@
       });
 
       document.addEventListener("change", (event) => {
+        if (state.busy) return;
+        const primitive = event.target.closest(".stage-primitive");
+        if (primitive) {
+          changePrimitive(primitive);
+          return;
+        }
         const select = event.target.closest(".failure-select");
         if (select) {
           updateFailureBlock(select);
@@ -1198,14 +1341,14 @@
       });
 
       document.addEventListener("mouseover", (event) => {
-        const row = event.target.closest(".condition-row, .hold-row");
+        const row = event.target.closest(".condition-row");
         if (row && !row.contains(event.relatedTarget)) {
           scheduleReasonTooltip(row);
         }
       });
 
       document.addEventListener("mouseout", (event) => {
-        const row = event.target.closest(".condition-row, .hold-row");
+        const row = event.target.closest(".condition-row");
         if (row && !row.contains(event.relatedTarget)) {
           hideReasonTooltip();
         }

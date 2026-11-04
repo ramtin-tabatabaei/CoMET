@@ -117,6 +117,39 @@ def build_params(args):
     } for prefix, statistic in [('trans', 'median'), ('ori', 'max')])
 
 
+def print_threshold_summary(output, tasks, *, include_collision=True):
+    """Print reports after all requested detector artifacts are written."""
+    report_dir = Path(output) / 'threshold_report'
+    selected = set(tasks)
+    summaries = []
+    for name, column, unit in (
+        ('transition', 'arrival_threshold', 'm'),
+        ('orientation', 'arrival_threshold', 'rad'),
+        ('slip', 'threshold', 'N'),
+    ):
+        filename = report_dir / f'{name}.csv'
+        if filename.exists():
+            with filename.open(newline='') as stream:
+                values = [float(row[column]) for row in csv.DictReader(stream)
+                          if row['task'] in selected]
+            if values:
+                summaries.append((name, values, unit))
+    if include_collision:
+        values = []
+        for task in tasks:
+            with (report_dir / f'{task}_collision_residual.csv').open(newline='') as stream:
+                values.extend(float(row['threshold_nm']) for row in csv.DictReader(stream))
+        if values:
+            summaries.append(('collision', values, 'Nm'))
+    print(f'\n  {"Detector":<14} {"Minimum":>12} {"Median":>12} {"Maximum":>12} {"Unit":>6}')
+    for name, values, unit in summaries:
+        print(f'  {name.capitalize():<14} {min(values):>12.4f} '
+              f'{statistics.median(values):>12.4f} {max(values):>12.4f} {unit:>6}')
+    if include_collision:
+        print('  Collision summarizes per-joint thresholds; see *_collision_residual.csv for each joint.')
+    print(f'\n  Threshold reports: {report_dir}', flush=True)
+
+
 def main():
     defaults = load_settings()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -124,6 +157,7 @@ def main():
     parser.add_argument('--raw-dir', type=Path,
                         help='Defaults to <out-root>/clean_data.')
     parser.add_argument('--task', action='append', default=[])
+    parser.add_argument('--defer-summary', action='store_true', help=argparse.SUPPRESS)
     for group, prefix in [('transition', 'trans'), ('orientation', 'ori')]:
         for key, value in defaults[group].items():
             parser.add_argument(f'--{prefix}-{key.replace("_", "-")}', type=float, default=value)
@@ -147,7 +181,7 @@ def main():
 
     trans, orientation = build_params(args)
     reports = {'transition': [], 'orientation': [], 'slip': []}
-    print(f'compute_thresholds: {len(tasks)} task(s) from {raw_dir} -> {output}')
+    print('\nCalibration | compute thresholds', flush=True)
     for task in tasks:
         episodes = load_episodes(task, raw_dir)
         for name, column, signal, parameters in (
@@ -170,7 +204,7 @@ def main():
         if slip:
             reports['slip'].append({'task': task, 'metric': 'grip_force',
                                     'k': args.grip_k, **slip})
-        print(f'  {task}: {len(episodes)} episodes')
+        print(f'  {task:<32} {len(episodes):>3} clean episodes', flush=True)
 
     report_dir = output / 'threshold_report'
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -183,11 +217,8 @@ def main():
             writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
-        thresholds = [row['arrival_threshold' if name != 'slip' else 'threshold']
-                      for row in rows]
-        print(f'  {name}: threshold min/median/max='
-              f'{min(thresholds):.4f}/{statistics.median(thresholds):.4f}/{max(thresholds):.4f}')
-    print(f'Reports saved in {report_dir}')
+    if not args.defer_summary:
+        print_threshold_summary(output, tasks, include_collision=False)
 
 
 if __name__ == '__main__':

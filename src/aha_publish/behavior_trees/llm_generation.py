@@ -320,6 +320,77 @@ def normalize_scene_object_names(stages: list[dict], task_context) -> list[dict]
     return stages
 
 
+def revise_stage_conditions(
+    failure_definitions: dict,
+    task_context: dict,
+    client,
+    provider: str,
+    stage: dict,
+    current_stages: list[dict],
+) -> dict:
+    """Revise one stage against the catalogue, retaining the user's primitive."""
+    if provider != "openai":
+        raise ValueError(f"Unsupported provider '{provider}'. Only OpenAI is supported.")
+    primitive = _normalize_primitive(stage.get("primitive"))
+    if primitive is None:
+        raise ValueError("Choose a valid primitive before updating this stage.")
+    stage_number = stage.get("stage")
+    if not any(str(item["stage"]) == str(stage_number)
+               for item in extract_task_stages(task_context)):
+        raise ValueError("The requested stage is not in the task description.")
+
+    _reset_token_usage()
+    system_prompt = get_system_prompt() + """
+
+INTERACTIVE SINGLE-STAGE REVISION
+This request updates exactly one existing stage, rather than generating a whole
+tree. Return exactly that stage in the stages array, with its original stage ID.
+The user's selected primitive overrides automatic primitive classification for
+this stage. Keep that primitive and use its catalogue placements to derive the
+conditions. Preserve the task's factual object and gripper evidence.
+Follow the stage's missing_description as an instruction to edit, add, or remove
+conditions. Preserve unrelated existing checks and their selected state where
+possible. If the primitive changed, re-derive all pre/postconditions for the new
+primitive, removing checks that no longer apply and adding applicable checks.
+Other stages are context only; do not return or change them. Use the full task
+and current tree to interpret sequence-dependent and task-global rules.
+"""
+    user_message = (
+        "TASK DESCRIPTION\n" + json.dumps(task_context, indent=2)
+        + "\n\nVALID FAILURE NAMES\n"
+        + json.dumps(failure_definition_summaries(failure_definitions), indent=2)
+        + "\n\nCURRENT TREE (including unsaved user edits)\n"
+        + json.dumps(current_stages, indent=2)
+        + "\n\nSTAGE TO UPDATE (primitive is the user's selection; "
+          "missing_description contains the requested changes)\n"
+        + json.dumps(stage, indent=2)
+    )
+    result = generate_conditions_with_openai(client, user_message, system_prompt)
+    stages = result.get("stages") or []
+    if len(stages) != 1 or str(stages[0].get("stage")) != str(stage_number):
+        raise ValueError("The model must return only the requested stage. Try updating again.")
+    revised = stages[0]
+    if _normalize_primitive(revised.get("primitive")) != primitive:
+        raise ValueError("The model changed the selected primitive. Try updating again.")
+    revised["primitive"] = primitive
+    revised["missing_description"] = stage.get("missing_description", "")
+    revised["summary"] = stage.get("summary", "")
+    normalize_scene_object_names([revised], task_context)
+    # Exact checks which survived the revision retain the user's checkbox choice.
+    for kind in ("preconditions", "postconditions"):
+        existing = {item.get("condition"): item for item in stage.get(kind, [])}
+        for item in revised.get(kind, []):
+            previous = existing.get(item.get("condition"), {})
+            for key in ("selected", "original_condition"):
+                if key in previous:
+                    item[key] = previous[key]
+    if stage.get("previous_primitive", primitive) == primitive:
+        revised["hold_conditions"] = hold_conditions_for_saved_stage(stage)
+    else:
+        attach_hold_conditions([revised])
+    return {"stage": revised, "token_usage": {"records": list(_TOKEN_USAGE.get())}}
+
+
 def generate_conditions(
     failure_definitions: dict,
     task_context: str,

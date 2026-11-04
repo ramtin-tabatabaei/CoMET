@@ -134,6 +134,11 @@ def make_gui_handler(args: argparse.Namespace):
                             "saved_conditions": saved_conditions,
                             "overall_description": task_context.get("overall_description", ""),
                             "task_stages": extract_task_stages(task_context),
+                            "primitives": list(WAYPOINT_PRIMITIVES),
+                            "primitive_policy": {
+                                detector: sorted(primitives)
+                                for detector, primitives in load_primitive_policy().items()
+                            },
                             "failure_categories": failure_definition_summaries(failure_definitions),
                             "hold_conditions": hold_condition_detectors(failure_definitions),
                         }
@@ -146,6 +151,37 @@ def make_gui_handler(args: argparse.Namespace):
 
         def do_POST(self):
             path = urlparse(self.path).path
+
+            if path == "/api/revise-stage":
+                try:
+                    payload = self._read_json()
+                    stage = payload.get("stage")
+                    current_stages = payload.get("stages")
+                    if not isinstance(stage, dict) or not isinstance(current_stages, list):
+                        raise ValueError("A stage and the current tree are required.")
+                    if stage.get("primitive") not in WAYPOINT_PRIMITIVES:
+                        raise ValueError("Choose a valid primitive before updating this stage.")
+                    ensure_input_files(args)
+                    task_context = load_task_context_object(args.task_context)
+                    if not any(str(item["stage"]) == str(stage.get("stage"))
+                               for item in extract_task_stages(task_context)):
+                        raise ValueError("The requested stage is not in the task description.")
+                except (ValueError, TypeError) as e:
+                    self._send_error_json(e, 400)
+                    return
+                except Exception as e:
+                    self._send_error_json(e, 500)
+                    return
+                try:
+                    provider = args.provider.strip().lower()
+                    result = revise_stage_conditions(
+                        load_failure_definitions(), task_context, build_client(provider),
+                        provider, stage, current_stages,
+                    )
+                    self._send_json(result)
+                except Exception as e:
+                    self._send_error_json(e, 500)
+                return
 
             if path == "/api/generate":
                 try:

@@ -12,7 +12,7 @@ from ._bundle import (
 
 NAME = "orientation"
 FAILURE = "orientation"
-CONDITION = "orientation_maintained() == True"
+CONDITION = "correct_orientation_during_motion() == True"
 # No live waypoint pose needed: arrival angle is measured against the composed reference
 # (ttm_waypoint_angle), never the live target.
 NEEDS_WAYPOINT_POSE = False

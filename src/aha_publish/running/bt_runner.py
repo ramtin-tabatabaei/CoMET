@@ -8,10 +8,9 @@ import argparse
 import atexit
 import csv
 import math
-import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 import json
 import os
@@ -23,6 +22,7 @@ from pathlib import Path
 
 from aha_publish.running import run_support as EV
 from aha_publish.running.plot_maker import render_plots
+from aha_publish.running.console import EPISODE_CONSOLE, RunConsole, capture_episode, duration
 
 PROJECT_ROOT = (paths.PROJECT_ROOT)
 SCRIPT_DIR = (paths.SOURCE_DIR / 'running')
@@ -2606,7 +2606,7 @@ def run_episode(task, failure, waypoint, case_dir, *, vlm_confirm='', vlm_model=
         vlm_args = ["--vlm-checks", "both", "--vlm-predicates", "__none__"]
     else:
         vlm_args = ["--vlm-checks", "off"]
-    cmd = [sys.executable, str(Path(__file__).resolve()), "single", "--task", task, "--failure", failure,
+    cmd = [sys.executable, '-u', str(Path(__file__).resolve()), "single", "--task", task, "--failure", failure,
            "--headless", "--mode", "auto", *vlm_args,
            "--no-side-camera-window"]
     if vlm_model:
@@ -2616,20 +2616,10 @@ def run_episode(task, failure, waypoint, case_dir, *, vlm_confirm='', vlm_model=
         cmd += ["--failure-waypoint", str(waypoint)]
 
     t0 = time.time()
-    failure_reason = None
-    try:
-        p = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, cwd=EV.PROJECT_ROOT,
-                           capture_output=True, text=True, timeout=RUN_TIMEOUT)
-        out = (p.stdout or "") + "\n" + (p.stderr or "")
-        if p.returncode:
-            failure_reason = f"exit status {p.returncode}"
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or "") if isinstance(e.stdout, str) else ""
-        out += "\n[TIMEOUT]"
-        failure_reason = "timeout"
+    out, returncode, timed_out = capture_episode(
+        cmd, env, EV.PROJECT_ROOT, Path(case_dir) / 'run.log', RUN_TIMEOUT)
+    failure_reason = 'timeout' if timed_out else f'exit status {returncode}' if returncode else None
     elapsed = round(time.time() - t0, 1)
-    with open(os.path.join(case_dir, "run.log"), "w") as f:
-        f.write("$ " + " ".join(cmd) + "\n\n" + out)
     if failure_reason:
         raise RuntimeError(f"BT episode failed ({failure_reason}); see {case_dir}/run.log")
     return out, elapsed, drift
@@ -2787,9 +2777,13 @@ def run_job(task, case, out_dir, na_retries=NA_RETRIES, *, vlm_confirm='', vlm_m
                              slip_holding=slip_holding)
         if resp_outcome != "NA_unreached":
             break
-        print(f"[retry] {task}/{case_name}: injection wp {waypoint} skipped "
-              f"(NA_unreached), attempt {attempt}/{na_retries} -> re-running",
-              flush=True)
+        message = (f'  RETRY  {task}/{case_name}: injection wp{waypoint} was skipped; '
+                   f'attempt {attempt}/{na_retries}')
+        context = EPISODE_CONSOLE.get()
+        if context:
+            context[0].note(message)
+        else:
+            print(message, flush=True)
 
     plots = render_plots(case_dir, task, label, drift, info,
                          failure=failure, waypoint=waypoint)
@@ -3105,6 +3099,8 @@ def run_batch(argv=None):
                          "Default: check all conditions.")
 
     args = ap.parse_args(argv)
+    if args.workers < 1 or args.timeout < 1 or args.na_retries < 1:
+        ap.error('--workers, --timeout, and --na-retries must be positive')
 
     RUN_TIMEOUT = args.timeout
     out_dir = os.path.abspath(args.out)
@@ -3173,7 +3169,7 @@ def run_batch(argv=None):
         stamp = time.strftime("%Y%m%d_%H%M%S")
         backup = f"{results_path}.redo.{stamp}.bak"
         os.replace(results_path, backup)
-        print(f"[run_all] --redo: previous results.csv -> {backup}", flush=True)
+        print(f'  Previous results backed up: {backup}', flush=True)
     if not args.redo and os.path.exists(results_path):
         with open(results_path, newline="") as f:
             for r in csv.DictReader(f):
@@ -3183,37 +3179,65 @@ def run_batch(argv=None):
     jobs = [(t, c) for t in tasks for c in cases_by_task[t]
             if (t, c[0]) not in done_pairs]
     skipped = sum(len(cases_by_task[t]) for t in tasks) - len(jobs)
-    print(f"[run_all] out={out_dir} tasks={len(tasks)} episodes={len(jobs)} "
-          f"(skipped {skipped} already-done) workers={args.workers} "
-          f"failures={','.join(sorted(allowed_failures)) if allowed_failures else 'all'} "
-          f"(all detectors live, "
-          f"{'VLM confirm=' + vlm_confirm + ', cameras=' + (EV.detector_vlm_cameras(args.vlm_cameras) or 'per-detector default') + ', model=' + args.vlm_model if vlm_confirm else 'no detector VLM'}, "
-          f"{'prepost VLM=' + (args.vlm_prepost_predicates or 'all predicates') if args.vlm_prepost else 'no prepost VLM'})\n",
-          flush=True)
+    print('\nBehavior trees | run', flush=True)
+    print(f'  Tasks: {len(tasks)}   Episodes: {len(jobs)}   Parallel workers: {min(args.workers, len(jobs))}', flush=True)
+    if skipped:
+        print(f'  Reused: {skipped} completed episode(s)', flush=True)
+    checks = ['live detectors']
+    if args.vlm_prepost:
+        checks.append('pre/post conditions')
+    if vlm_confirm:
+        checks.append(f'{vlm_confirm.replace(",", "/")} confirmation')
+    print(f'  Checks: {", ".join(checks)}', flush=True)
+    if args.vlm_prepost or vlm_confirm:
+        print(f'  VLM model: {args.vlm_model}', flush=True)
+    print(f'  Outputs: {out_dir}', flush=True)
+    if not jobs:
+        print('  No new episodes to run. Use --redo to rerun completed cases.', flush=True)
 
-    done = 0
+    console = RunConsole(len(jobs))
+
+    def run_reported_job(task, case):
+        key = (task, case[0])
+        token = EPISODE_CONSOLE.set((console, key))
+        try:
+            console.start(key)
+            return run_job(task, case, out_dir, args.na_retries,
+                           vlm_confirm=vlm_confirm, vlm_model=args.vlm_model,
+                           vlm_cameras=args.vlm_cameras, prepost=args.vlm_prepost,
+                           prepost_predicates=args.vlm_prepost_predicates)
+        finally:
+            EPISODE_CONSOLE.reset(token)
+
     failed_jobs = 0
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(run_job, t, c, out_dir, args.na_retries, vlm_confirm=vlm_confirm, vlm_model=args.vlm_model, vlm_cameras=args.vlm_cameras, prepost=args.vlm_prepost, prepost_predicates=args.vlm_prepost_predicates): (t, c)
-                for t, c in jobs}
-        for fut in as_completed(futs):
-            t, c = futs[fut]
-            done += 1
-            try:
-                rows = fut.result()
-            except Exception as exc:                    # keep the batch alive
-                failed_jobs += 1
-                print(f"[{done}/{len(jobs)}] {t}/{c[0]} ERROR: {exc}", flush=True)
-                continue
-            append_results(out_dir, rows)
-            fired = [r["detector"] for r in rows if str(r["fired"]) == "True"]
-            print(f"[{done}/{len(jobs)}] {t}/{c[0]} "
-                  f"fired={','.join(fired) or 'none'} ({rows[0]['elapsed']}s)", flush=True)
+        futs = {ex.submit(run_reported_job, task, case): (task, case)
+                for task, case in jobs}
+        try:
+            while futs:
+                ready, _ = wait(futs, timeout=.5, return_when=FIRST_COMPLETED)
+                console.refresh()
+                for future in ready:
+                    task, case = futs.pop(future)
+                    try:
+                        rows = future.result()
+                    except Exception as exc:
+                        failed_jobs += 1
+                        console.complete((task, case[0]), error=exc)
+                        continue
+                    append_results(out_dir, rows)
+                    console.complete((task, case[0]), rows=rows)
+        except BaseException:
+            console.cancel()
+            raise
 
     rewrite_summaries(out_dir)
-    print(f"\n[run_all] done. results -> {os.path.join(out_dir, 'results.csv')}")
-    print(f"[run_all] summary -> {os.path.join(out_dir, 'summary.csv')}")
-    print(f"[run_all] misclassified -> {os.path.join(out_dir, 'misclassified.csv')}")
+    console.note(f'\nRun finished | {console.done}/{len(jobs)} episodes | {duration(time.monotonic() - console.started)} | {failed_jobs} execution errors')
+    console.note(f'  Episode logs: {out_dir}/<task>/<case>/run.log')
+    if os.path.exists(results_path):
+        console.note(f'  Results:      {results_path}')
+        console.note(f'  Summary:      {out_dir}/summary.csv')
+        console.note(f'  Review cases: {out_dir}/misclassified.csv')
 
     if failed_jobs:
         raise SystemExit(f"{failed_jobs} BT episode(s) failed; inspect the case run.log files.")
@@ -3229,4 +3253,7 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        raise SystemExit(130)

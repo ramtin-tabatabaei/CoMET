@@ -12,7 +12,7 @@ from ._bundle import (
 
 NAME = "transition"
 FAILURE = "transition"
-CONDITION = "reaches_waypoint() == True"
+CONDITION = "correct_transition_during_motion() == True"
 # No live waypoint pose needed: arrival distance is measured against the composed reference
 # (ttm_waypoint_distance), never the live target.
 NEEDS_WAYPOINT_POSE = False

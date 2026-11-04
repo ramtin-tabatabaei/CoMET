@@ -37,6 +37,9 @@ else:
 _HOLD_PREDICATE_TO_DETECTOR = {
     "no_collision": "collision",
     "maintains_grasp": "slip",
+    "correct_orientation_during_motion": "orientation",
+    "correct_transition_during_motion": "transition",
+    # Older saved trees may still use these names.
     "orientation_maintained": "orientation",
     "reaches_waypoint": "transition",
 }

@@ -11,7 +11,7 @@ from .io_context import *
 # ------------------------------------------------------------------------------
 # Hold conditions (runtime detectors)
 #
-# Continuous "must stay true while the stage runs" invariants, one per runtime
+# Motion requirements, one per runtime
 # detector in aha_scripts/detectors/. Unlike pre/postconditions these are NOT produced by the
 # language model; the BT maker assigns them by config/detector_primitives.json.
 # This list is the catalog: it is the only definition of the
@@ -23,35 +23,39 @@ DEFAULT_HOLD_CONDITION_DETECTORS = [
         "failure": "collision",
         "condition": "no_collision() == True",
         "label": "No collision",
-        "definition": "No unexpected collision or contact spike occurs while the stage executes. Backed by the collision detector (joint-torque deltas/norms compared against the task's successful-run torque stats).",
+        "definition": "The robot moves without unexpected contact or collision.",
+        "check_timing": "During motion",
     },
     {
         "detector": "slip",
         "failure": "slip",
         "condition": "maintains_grasp() == True",
         "label": "Grasp maintained",
-        "definition": "A grasped object does not slip out of the gripper while the stage executes. Backed by the slip detector (gripper touch-force loss relative to the grip-force stats while in a holding state).",
+        "definition": "The held object stays securely in the gripper without slipping.",
+        "check_timing": "While holding an object",
     },
     {
         "detector": "orientation",
         "failure": "orientation",
-        "condition": "orientation_maintained() == True",
-        "label": "Orientation maintained",
-        "definition": "The waypoint/object orientation stays within the expected trend and does not drift. Backed by the orientation detector (TTM-recalculated waypoint angle trend).",
+        "condition": "correct_orientation_during_motion() == True",
+        "label": "Correct orientation during motion",
+        "definition": "The motion finishes with the gripper at the expected waypoint orientation, within the calibrated tolerance.",
+        "check_timing": "At waypoint arrival",
     },
     {
         "detector": "transition",
         "failure": "transition",
-        "condition": "reaches_waypoint() == True",
-        "label": "Waypoint reached",
-        "definition": "The end effector reaches the expected waypoint pose and transitions in the correct sequence. Backed by the transition detector (end-effector distance to the expected waypoint pose).",
+        "condition": "correct_transition_during_motion() == True",
+        "label": "Correct transition during motion",
+        "definition": "The motion finishes with the gripper at the expected waypoint position, within the calibrated tolerance.",
+        "check_timing": "At waypoint arrival",
     },
 ]
 
 HOLD_CONDITIONS_DESCRIPTION = (
-    "Continuous invariants that must stay TRUE for the whole time a waypoint/stage is "
-    "executing, as opposed to the pre/post checkpoints. Each one maps one-to-one to a "
-    "runtime detector. Configured primitive assignments determine where they apply; "
+    "Requirements for a stage's motion. Collision and slip are monitored during "
+    "execution; orientation and transition are evaluated at waypoint arrival. "
+    "Each requirement maps to a runtime detector. Configured primitive assignments determine where they apply; "
     "these are NOT produced by the language model."
 )
 
@@ -99,6 +103,7 @@ def build_hold_condition_blocks(primitive=None, *, primitive_policy=None) -> lis
                 "failure": failure,
                 "label": entry.get("label") or detector,
                 "definition": definition,
+                "check_timing": entry.get("check_timing", ""),
                 "alternatives": [],
                 "selected": True,
                 "failure_links": [{"failure": failure, "reason": definition}],

@@ -39,13 +39,12 @@
     "object_in_gripper": "gripper_and_grasp_guidance",
     "gripper_condition": "gripper_and_grasp_guidance",
     "gripper_released": "gripper_and_grasp_guidance",
-    "end_effector_aligned_with": "alignment_and_orientation_guidance",
     "gripper_oriented_for": "alignment_and_orientation_guidance",
     "on": "spatial_relation_guidance",
     "inside": "spatial_relation_guidance",
     "next_to": "spatial_relation_guidance",
-    "above": "spatial_relation_guidance",
-    "closed": "spatial_relation_guidance"
+    "closed": "spatial_relation_guidance",
+    "open": "spatial_relation_guidance"
   },
   "placeholders": "Definitions may contain <object>, <target>, <reference>, or <args>. <args> expands to the full argument list of the condition; the others are filled positionally from the condition's arguments.",
   "predicates": {
@@ -130,6 +129,14 @@
         "Return uncertain only when neither the pad-object gaps nor the object's independent support can be seen in any view."
       ]
     },
+    "end_effector_in_contact_with": {
+      "signature": "end_effector_in_contact_with(<object>) == True",
+      "definition": "True when the gripper or its fingertips visibly touch <object> without holding it in a grasp. Being nearby or appearing to overlap in one camera view is not sufficient."
+    },
+    "open": {
+      "signature": "open(<object>) == True",
+      "definition": "True when <object> is a door, lid, or similar panel visibly open enough to expose the opening it covers. This describes the object's state, not the gripper fingers."
+    },
     "closed": {
       "signature": "closed(<object>) == True",
       "definition": [
@@ -153,10 +160,6 @@
     "next_to": {
       "signature": "next_to(<object>, <target>) == true",
       "definition": "True when <object> is positioned directly adjacent to <target>, close together, without necessarily touching or stacking."
-    },
-    "above": {
-      "signature": "above(<object>, <target>) == true",
-      "definition": "True when <object> is positioned above <target> (higher and roughly over it) in the images, not yet resting on it."
     }
   }
 }
