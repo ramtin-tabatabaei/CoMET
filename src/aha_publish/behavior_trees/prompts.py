@@ -535,7 +535,7 @@ held_object is authoritative and decides which primitives are even available.
   forbidden, whatever the gripper state or the free text suggests.
 * When held_object is null at EVERY waypoint of the task, the task involves no
   grasping at all. Every waypoint is move or push, and no waypoint may carry a
-  held-object condition such as object_in_gripper(...).
+  condition requiring an object to be held.
 * grasp is permitted only where held_object goes from null to a named object.
   transport and place are permitted only where held_object names an object at
   both the start and the end of the waypoint. release is permitted only where
@@ -628,7 +628,7 @@ Continuity:
 * If waypoint i ends with gripper_condition = Closed, waypoint i+1 begins with
   gripper_condition = Closed unless a more specific catalogue Grasp
   predicate is authoritative.
-* After a release (gripper_released), a subsequent empty-arm move begins with
+* After a release, a subsequent empty-arm move begins with
   gripper_condition = Open.
 
 === STEP 3: GENERIC TIMING AND CONTINUITY ===
@@ -732,7 +732,7 @@ R3 — Primitive classification
     press into a grasp, and an object displaced by a press is never transported.
   - held_object gates the primitive. Where held_object is null, only move and
     push are legal; reclassify any grasp, transport, place or release, and
-    remove every held-object condition (object_in_gripper and the like) that the
+    remove every condition requiring an object to be held that the
     old primitive authorised. grasp needs held_object to go null -> object;
     transport and place need it named at both ends; release needs object -> null.
     gripper_state alone never establishes holding.
