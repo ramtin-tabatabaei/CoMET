@@ -279,13 +279,9 @@ For example, the default grasp-loss detector assignment is:
 ```
 
 Available primitives are `move`, `grasp`, `transport`, `place`, `release`, and
-`push`. Configured assignments apply during generation, review, and execution,
-and override saved per-stage selections. An empty list disables that detector;
-a stage without a primitive does not receive it. Detectors absent from the
-configuration retain their normal BT selections.
+`push`.
 
-The slip detector collects its held-force baseline during grasping. A commanded
-gripper opening ends its grasp-loss check, including during a release stage.
+
 
 ## Calibration
 
@@ -295,16 +291,10 @@ behavior trees.
 
 ```bash
 python calibration/main.py all --task basketball_in_hoop --episodes 10
-python calibration/main.py collect --task basketball_in_hoop --episodes 10
-python calibration/main.py compute --task basketball_in_hoop
 ```
 
-`collect` records clean telemetry and reuses complete task baselines. `compute`
-recalculates thresholds from recorded data. `all` performs both operations.
 Collection automatically runs up to 8 simulator processes, bounded by available
-CPU and memory. Episodes of the same task run in parallel too. Each simulator
-collects its own batch in an isolated directory; complete, validated batches are
-merged into the task baseline. The terminal shows episode progress and elapsed
+CPU and memory. The terminal shows episode progress and elapsed
 time. Detailed simulator output is saved under `outputs/calibration/logs/`.
 Use `--workers 1` for sequential collection or set a specific parallel limit:
 
@@ -312,65 +302,13 @@ Use `--workers 1` for sequential collection or set a specific parallel limit:
 python calibration/main.py all --task basketball_in_hoop --episodes 10 --workers 4
 ```
 
-Use `--force` with `collect` or `all` to replace an existing clean baseline:
+Use `--force` with `all` to replace an existing clean baseline:
 
 ```bash
 python calibration/main.py all --task basketball_in_hoop --episodes 10 --force
 ```
 
-To recompute using an explicit configuration or external telemetry:
 
-```bash
-python calibration/main.py compute --task basketball_in_hoop \
-  --config config/thresholds.json --raw-dir /path/to/clean_data
-```
-
-### Threshold calculation
-
-| Detector | Calculation |
-| --- | --- |
-| Transition | Maximum of the arrival floor and scaled median clean arrival error, per waypoint |
-| Orientation | Maximum of the arrival floor and scaled maximum clean arrival error, per waypoint |
-| Collision | Per-joint De Luca residual thresholds: `max(residual_floor, clean_max_abs_residual) * residual_joint_multipliers` |
-| Slip | Mean held force minus `grip_k` times its standard deviation, bounded by the floor and optional ceiling |
-
-Distances use meters, orientations radians, grip forces newtons, and joint
-torques newton-meters. `grip_ceiling: null` disables the ceiling. Slip statistics
-average the filtered per-episode means and standard deviations. Repeated
-waypoint occurrences retain separate arrival histories during calibration.
-
-Each task receives `manifests/<task>.json` under `AHA_CALIBRATION_ROOT`
-(default: `outputs/calibration/`). Execution loads its thresholds and runtime
-settings automatically. Tasks with different runtime settings must be run
-separately or recalibrated together.
-
-### Collision observer
-
-Collision detection uses the De Luca generalized-momentum observer (method 3).
-Its settings are defined in the `collision` section of `config/thresholds.json`:
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `residual_joint_multipliers` | `[5.0, 1.1, 1.1, 1.1, 1.1, 2.0, 1.1]` | Multipliers for joints 1–7 |
-| `residual_floor` | `3.0` Nm | Minimum clean residual baseline before multiplication |
-| `residual_warmup_multiplier` | `1.1` | Scalar warmup fallback; not applied to calibrated joint thresholds |
-| `momentum_gain` | `25.0` s⁻¹ | Observer gain |
-| `time_step` | `0.05` s | Observer integration step; must match simulation |
-| `momentum_version` | `1` | Supported observer update |
-| `residual_settle_steps` | `3` | Startup frames excluded from calibration |
-| `residual_min_joints` | `1` | Simultaneous joint exceedances required |
-
-The collector writes `clean_data/<task>/epN.residual.json` alongside each episode
-CSV. These files record maximum absolute residuals and observer parameters.
-Computation aggregates the maxima across episodes into
-`residual_stats/<task>_residual_stats.json`; thresholds are reported in
-`threshold_report/<task>_collision_residual.csv`.
-
-After changing multipliers or the residual floor, rerun `compute` and execute
-with `--redo`. Changes to observer gain, integration step, or settling frames
-require fresh collection with `all --force`. Calibration must contain residual
-data from the same observer configuration. Tasks without held-force samples use
-the slip detector's fallback threshold.
 
 ## Repository and artifacts
 
@@ -388,9 +326,6 @@ CoMET/
 └── run_pipeline.py
 ```
 
-Source models and task YAMLs are supplied by the simulator dependencies.
-Generated experiment data, local environments, caches, and credentials are
-excluded from version control.
 
 | Artifact | Default location |
 | --- | --- |
@@ -403,13 +338,3 @@ excluded from version control.
 | Calibration manifest | `outputs/calibration/manifests/<task>.json` |
 | Clean execution log | `outputs/runs/<task>/clean/run.log` |
 
-## Troubleshooting
-
-| Issue | Resolution |
-| --- | --- |
-| `conda: command not found` | Initialize Conda for Bash or source its `etc/profile.d/conda.sh` before setup. |
-| Missing simulator dependency | Complete the pinned source downloads and patch application before creating the environment. |
-| Python import errors | Activate the project environment and run commands from the repository root. Rebuild PyRep if its compiled binding is missing. |
-| Qt `xcb`, shared-library, or display errors | Verify the system dependencies and activation settings. Use the Xvfb commands above and inspect the renderer with `glxinfo -B` on the same display. |
-| Missing generated input | Run the preceding stage for the same task and output-root configuration. |
-| API authentication or model-access error | Set `OPENAI_API_KEY` and verify access to the selected model. |
