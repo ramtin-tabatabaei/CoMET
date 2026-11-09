@@ -69,26 +69,7 @@ def _residual_joint_mult(spec):
 
 # Per-joint multiplier applied on top of the calibrated threshold vector:
 #     thr_i = max(FLOOR, clean_max_i) * MULT_i
-# The joints are not equally informative. Measured over the collision runs of
-# basketball_in_hoop / beat_the_buzz / change_channel / close_jar, j0, j2 and j5
-# cross their calibrated threshold in nearly every burst -- including bursts the
-# VLM did not confirm -- so at 1.0 they carry most of the false positives, while
-# the wrist joints j4/j6 only ever cross on real contacts. Replaying the recorded
-# traces of those tasks (25 labelled bursts, MIN_JOINTS=1) against the previous
-# vector [5, 1.1, 5, 1.1, 1.1, 2, 1.1]:
-#     all 1.0 : TP=13 FP=7 FN=3   65% precision / 81% recall
-#     previous: TP=13 FP=4 FN=3   76% precision / 81% recall
-# i.e. three false positives removed at no cost in detections. j5 is flat over
-# 1.8-2.5 (identical results); 3.0 is a cliff -- basketball_in_hoop drops from 3
-# true positives to 1, because its surviving detections peak on j5 at 2.5-3.4x.
-# NOTE: fitted in-sample on those four tasks; a leave-one-task-out check showed
-# per-joint multipliers do not transfer well across tasks, and the 5x on j0/j2
-# was derived from close_jar's false positives -- it costs basketball_in_hoop 2
-# of its 5 detections. Treat as a starting point and re-check on new tasks. Set
-# all-ones to disable. Only applies to the calibrated per-joint path, not the
-# warmup scalar fallback.
-# Joint 3 (plot r3, zero-based index 2) now uses 1.1 instead of 5.0.
-# The historical metrics above do not evaluate this updated vector.
+# Applies to calibrated per-joint thresholds; the warmup fallback is scalar.
 DEFAULT_RESIDUAL_JOINT_MULT = _residual_joint_mult(
     os.getenv('AHA_COLLISION_RESIDUAL_JOINT_MULT', '5.0,1.1,1.1,1.1,1.1,2.0,1.1'))
 # The observer's residual has a transient while its integral catches the initial

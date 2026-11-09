@@ -4,7 +4,7 @@ CoMET is a framework for verifying robotic task execution in RLBench using
 behavior-tree conditions and live failure detectors. It combines visual condition
 checks with geometric and force-based monitoring, and provides a pipeline for
 task description generation, behavior-tree construction, detector calibration,
-execution, and evaluation.
+and execution.
 
 ## Workflow
 
@@ -14,7 +14,6 @@ execution, and evaluation.
 | Task descriptions | `02_descriptions/main.py` | Camera images, gripper sequences, and task descriptions |
 | Behavior trees | `03_behavior_trees/main.py` | Per-stage conditions and detector assignments |
 | Execution | `04_running/main.py` | Clean and injected-failure episodes, telemetry, and visual verdicts |
-| Evaluation | `05_scoring/main.py` | Checkpoint samples and detection metrics |
 
 Detector calibration is performed with `calibration/main.py` before monitored
 execution. Scene inspection reads existing `.ttm` models; it does not modify them.
@@ -138,12 +137,12 @@ python run_pipeline.py --task basketball_in_hoop
 ```
 
 This runs scene inspection, evidence capture, description generation,
-behavior-tree generation, calibration, execution, and scoring in order. The
-defaults are 10 clean calibration episodes, one worker, and all supported injected
-failure cases plus a clean baseline.
+behavior-tree generation, calibration, and execution in order. The defaults are
+10 clean calibration episodes, one worker, and all supported injected failure
+cases plus a clean baseline.
 
 The pipeline regenerates task evidence and behavior trees, replaces the selected
-tasks' calibration data, and reruns evaluation cases. Set a separate output root
+tasks' calibration data, and reruns execution cases. Set a separate output root
 to retain an earlier experiment.
 
 Preview the commands without simulator or API calls:
@@ -171,7 +170,6 @@ python 02_descriptions/main.py --task basketball_in_hoop
 python 03_behavior_trees/main.py --task basketball_in_hoop --generate-only
 python calibration/main.py all --task basketball_in_hoop --episodes 10
 python 04_running/main.py --task basketball_in_hoop --failures all
-python 05_scoring/main.py --task basketball_in_hoop
 ```
 
 Steps 1–4 accept repeated `--task` arguments or `--all`. Calibration accepts
@@ -189,8 +187,8 @@ This requires a saved BT in `outputs/behavior_trees/` and accepts one task.
 
 Stage 4 shows live waypoint progress, pre/postcondition verdicts, and a compact
 detector-results table for each episode. Detailed simulator output and condition
-evidence are retained in `outputs/runs/<task>/<case>/run.log` for inspection and
-scoring. Completed cases are reused unless `--redo` is supplied.
+evidence are retained in `outputs/runs/<task>/<case>/run.log` for inspection.
+Completed cases are reused unless `--redo` is supplied.
 Detector plots are saved as PNG and SVG, with shared waypoint labels, separate
 collision panels for each joint, and legends outside the data area.
 
@@ -208,23 +206,21 @@ continuing in the same terminal. Multiple-task runs and the full pipeline use
 `--generate-only` automatically.
 
 Stage 4 resumes completed cases. Use `--redo` after changing behavior trees,
-detector settings, or calibration. `--failures none` selects clean evaluation;
+detector settings, or calibration. `--failures none` selects clean execution;
 `--waypoints` restricts injection waypoints while retaining the clean baseline.
 
 ```bash
 python 04_running/main.py --task basketball_in_hoop --failures collision --waypoints 1,2 --redo
 ```
 
-For detector-only execution and scoring:
+For detector-only execution:
 
 ```bash
 python 04_running/main.py --task basketball_in_hoop --checks detectors --failures all
-python 05_scoring/main.py --task basketball_in_hoop --methods A2
 ```
 
 `--checks detectors` disables runtime visual verification. Description and
-behavior-tree generation still use the API. On `run_pipeline.py`, this option
-also selects A2 for scoring.
+behavior-tree generation still use the API.
 
 All numbered entry points, `calibration/main.py`, and `run_pipeline.py` support
 `--dry-run`. Their `--help` commands work without a configured simulator.
@@ -308,11 +304,6 @@ the source task description.
 | `config/detector_primitives.json` | Detector assignments by action primitive |
 | `config/detector_vlm.json` | Default model and camera views for detector confirmation |
 | `config/thresholds.json` | Detector calibration parameters |
-| `config/condition_failure_mapping.json` | Reference description of condition-to-scoring-label mappings |
-
-The scoring mappings are implemented in
-`src/aha_publish/scoring/make_detection_samples.py`; editing the reference JSON
-alone does not change scoring behavior.
 
 For example, the default grasp-loss detector assignment is:
 
@@ -414,40 +405,6 @@ require fresh collection with `all --force`. Calibration must contain residual
 data from the same observer configuration. Tasks without held-force samples use
 the slip detector's fallback threshold.
 
-## Evaluation
-
-| Method | Signals |
-| --- | --- |
-| A1 | Visual condition checks |
-| A2 | Raw detector results |
-| A3 | Detector results with visual confirmation |
-| A4 | Visual condition checks combined with confirmed detector results |
-
-Execution with full checks enables condition verification and slip/collision
-visual confirmation. Scoring reads checkpoint verdicts and confirmations from
-`run.log`, together with detector telemetry.
-
-```bash
-python 05_scoring/main.py --task basketball_in_hoop
-```
-
-Rescore an existing sample CSV without simulator access:
-
-```bash
-python 05_scoring/main.py --samples outputs/scores/detection_samples.csv --methods A4
-```
-
-The default evaluation unit is a checkpoint, and the scoring window ends at the
-injection waypoint. Use `--window full` to include later checkpoints or
-`--unit episode` for episode-level scoring. Missing method results are excluded
-for that method. Uncertain verdicts count as success by default;
-`--uncertain-as failure` changes this policy.
-
-Injections that could not manifest are excluded. `ObjectNotFound` labels are
-mapped to wrong-sequence labels, and the batch runner excludes grasp-injection
-cases. These policies define the evaluated benchmark coverage. Frame sidecars
-provide detection latency when available.
-
 ## Repository and artifacts
 
 ```text
@@ -456,13 +413,11 @@ CoMET/
 ├── 02_descriptions/      # evidence capture and descriptions
 ├── 03_behavior_trees/    # behavior-tree generation and review
 ├── 04_running/           # monitored execution
-├── 05_scoring/           # evaluation
 ├── calibration/          # shared calibration entry point
 ├── config/               # conditions, detector settings, and calibration
 ├── patches/              # pinned backend adaptations
 ├── scripts/              # environment setup and dependency checks
 ├── src/aha_publish/      # implementation modules
-├── tests/
 └── run_pipeline.py
 ```
 
@@ -480,9 +435,6 @@ excluded from version control.
 | Behavior tree | `outputs/behavior_trees/<task>.bt_conditions.json` |
 | Calibration manifest | `outputs/calibration/manifests/<task>.json` |
 | Clean execution log | `outputs/runs/<task>/clean/run.log` |
-| Checkpoint samples | `outputs/scores/detection_samples.csv` |
-| Aggregate metrics | `outputs/scores/metrics_overall.csv` |
-| Per-failure metrics | `outputs/scores/metrics_per_failure.csv` |
 
 ## Troubleshooting
 
@@ -494,19 +446,3 @@ excluded from version control.
 | Qt `xcb`, shared-library, or display errors | Verify the system dependencies and activation settings. Use the Xvfb commands above and inspect the renderer with `glxinfo -B` on the same display. |
 | Missing generated input | Run the preceding stage for the same task and output-root configuration. |
 | API authentication or model-access error | Set `OPENAI_API_KEY` and verify access to the selected model. |
-
-## Tests
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests -v
-```
-
-The suite covers entry points, artifact isolation, behavior-tree generation,
-scoring, waypoint reference geometry, and agreement between calibration outputs
-and live detector thresholds. Simulator and API calls are mocked in the
-isolation tests.
-
-## License
-
-See [LICENSE](LICENSE) for the code license. Simulator and backend dependencies
-retain their respective upstream licenses.

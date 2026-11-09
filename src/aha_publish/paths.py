@@ -19,5 +19,4 @@ GRIPPER_DIR = OUTPUT_DIR / 'gripper_sequences'
 BT_DIR = OUTPUT_DIR / 'behavior_trees'
 CALIBRATION_DIR = location('AHA_CALIBRATION_ROOT', OUTPUT_DIR / 'calibration')
 RUNS_DIR = OUTPUT_DIR / 'runs'
-SCORES_DIR = OUTPUT_DIR / 'scores'
 CONFIGS_DIR = FAILGEN_ROOT / 'failgen/configs'

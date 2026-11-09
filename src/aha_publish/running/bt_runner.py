@@ -7,7 +7,6 @@ from aha_publish import paths
 import argparse
 import atexit
 import csv
-import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -2460,26 +2459,20 @@ def run_single(argv=None):
 
 DETECTORS = ("orientation", "transition", "slip", "collision")
 LIVE_ALL = ",".join(DETECTORS)
-# failgen failure `type` -> the detector responsible for catching it.
-FAILTYPE_DETECTOR = {ft: det for det, fts in EV.DETECTOR_FAILTYPES.items() for ft in fts}
 # Failure types no detector is expected to catch (a failed grasp means the
 # object was never held, so there is nothing for the cheap detectors to see).
-# Not enumerated, and dropped entirely by --rescore.
+# Excluded from batch case enumeration.
 EXCLUDED_FAILTYPES = {"grasp"}
 RUN_TIMEOUT = 1800
-# Max attempts for a case whose injection waypoint gets skipped (NA_unreached):
-# the skip is stochastic, so re-run and only finalize NA if all attempts skip.
-NA_RETRIES = 5
-
 _write_lock = threading.Lock()
 
-RESULT_FIELDS = ["task", "case", "failure", "waypoint", "ground_truth",
-                 "responsible_detector", "detector", "fired", "fired_waypoints",
+RESULT_FIELDS = ["task", "case", "failure", "waypoint", "detector", "fired", "fired_waypoints",
+                 "fired_confirmed", "fired_waypoints_confirmed",
                  "vlm_ran", "vlm_verdict", "vlm_retracted", "vlm_model",
                  "vlm_calls", "vlm_input_tokens", "vlm_output_tokens",
                  "vlm_reasoning_tokens", "vlm_cost_usd", "vlm_reason", "vlm_error",
                  "prepost_checks", "prepost_fails",
-                 "prepost_fail_wps", "outcome", "status", "plot", "elapsed"]
+                 "prepost_fail_wps", "status", "plot", "elapsed"]
 
 VLM_AUTO_CONFIRM = re.compile(
     r"\[vlm\] auto-confirming (orientation|transition|slip|collision) detection")
@@ -2532,16 +2525,15 @@ def _prepost_fields(stdout):
 
 
 def enumerate_cases(task):
-    """[(case_name, failure_type, waypoint, responsible_detector)] for a task:
+    """[(case_name, failure_type, waypoint)] for a task:
     one clean case + one per (failure type, waypoint) in the task's yaml."""
-    cases = [("clean", "none", None, "")]
+    cases = [("clean", "none", None)]
     by_type = EV.config_failtypes_by_wp(task)          # {type: set(wp)} from yaml
     for ftype in sorted(by_type):
         if ftype in EXCLUDED_FAILTYPES:
             continue
-        det = FAILTYPE_DETECTOR.get(ftype, "")
         for wp in sorted(by_type[ftype]):
-            cases.append((f"{ftype}_wp{wp}", ftype, wp, det))
+            cases.append((f"{ftype}_wp{wp}", ftype, wp))
     return cases
 
 
@@ -2587,7 +2579,7 @@ def run_episode(task, failure, waypoint, case_dir, *, vlm_confirm='', vlm_model=
     # --vlm-cameras default (resolves to ""): use EACH detector's OWN built-in
     # camera set (slip = 5 incl. wrist_depth, collision = its own), matching the
     # interactive runner, which never sets this var. base_env unconditionally
-    # pins the 4-cam eval default, so clear it here to actually hand control back
+    # pins the configured camera set, so clear it here to hand control back
     # to the detectors.
     if vlm_confirm and not EV.detector_vlm_cameras(vlm_cameras):
         env.pop("AHA_VLM_CONFIRM_CAMERAS", None)
@@ -2626,164 +2618,19 @@ def run_episode(task, failure, waypoint, case_dir, *, vlm_confirm='', vlm_model=
 
 
 # --------------------------------------------------------------------------- #
-# Scoring
-# --------------------------------------------------------------------------- #
-def score(det, info, is_clean, responsible, inj_wp, *,
-          reached=True, slip_holding=None):
-    """Outcome for one (detector, episode):
-
-      TP/TN/FP/FN     as usual, except FP is now CLEAN-episode-only.
-      CF              cross-fire: a non-responsible detector fired during
-                      another failure's episode. Often a genuine physical
-                      consequence of the injection (e.g. a translation offset
-                      ramming the table IS a collision), so it must not
-                      pollute FP counts.
-      NA_unreached    the episode ended before the injection waypoint started,
-                      so the failure was never injected -- nothing to detect.
-      NA_no_grasp     slip only: the injection hit while the robot was not
-                      holding anything, so no slip could manifest.
-    """
-    # Score the END-TO-END pipeline (cheap detector + VLM confirmation): a fire
-    # the VLM retracted is not a pipeline detection, so use the VLM-confirmed fire
-    # set. This turns a retracted fire on a clean episode into TN (not FP) and a
-    # wrongly-retracted real failure into FN. Falls back to the raw fires for
-    # detectors/episodes with no VLM (retracted fires there don't exist).
-    fired = info.get("fired_confirmed", info["fired"])
-    fwps = info.get("fired_waypoints_confirmed", info["fired_waypoints"])
-    if is_clean:
-        return "FP" if fired else "TN"
-    if det != responsible:
-        return "CF" if fired else "TN"
-    # "Can't-manifest" NAs take precedence: if the failure physically could not
-    # occur, a fire is spurious, not a true catch, so these stay NA even if the
-    # detector fired.
-    if det == "slip" and slip_holding is False:
-        return "NA_no_grasp"
-    # A detector that fired at (or one waypoint after) the injection point
-    # DETECTED the failure -> TP, even if the arm then skipped the waypoint's
-    # motion (orientation's target-mode catches the corrupted goal at wp start).
-    # Checked before the reached/skip branch so a genuine catch is never
-    # downgraded to NA_unreached.
-    hit = (inj_wp in fwps or (inj_wp + 1) in fwps) if inj_wp is not None else fired
-    if hit:
-        return "TP"
-    if not reached:
-        return "NA_unreached"
-    return "FN"
-
-
-def _drift_max_wp(drift):
-    """Highest waypoint with any telemetry across the drift logs. The failure
-    hook runs when its waypoint STARTS, so telemetry at wp >= inj_wp means the
-    injection actually happened."""
-    best = -1
-    for p in drift.values():
-        if not p or not os.path.exists(p):
-            continue
-        with open(p, newline="") as f:
-            for r in csv.DictReader(f):
-                try:
-                    best = max(best, int(float(r["waypoint"])))
-                except (KeyError, TypeError, ValueError):
-                    continue
-    return best
-
-
-def _finished_injection_wp(out, wp):
-    """True if the arm actually executed the injected waypoint's MOTION to
-    completion, i.e. stdout contains '[move] finished waypoint N path ...'.
-
-    When the motion planner skips the injected waypoint (it prints '[move]
-    planning path for waypoint N' then jumps straight to the next waypoint with
-    no 'executing'/'finished path' line), the responsible orientation/transition
-    detector never receives an arrival observation for that waypoint -- it never
-    had a chance to judge the failure. Such an episode is scored NA_unreached
-    rather than a false miss (FN). This uses the LOGICAL waypoint index (matching
-    inj_wp / fired_waypoints), unlike the raw scene-object index in the drift
-    logs, which RLBench renumbers per episode."""
-    if wp is None:
-        return True
-    return re.search(rf"finished waypoint {int(wp)} path", out) is not None
-
-
-def _slip_holding_at_injection(slip_csv, inj_wp):
-    """True/False: was the robot holding an object when the slip injection hit
-    (start of inj_wp)? Judged from slip telemetry in a window spanning the last
-    frames before the waypoint starts and its first frames. None if unknown."""
-    if not slip_csv or not os.path.exists(slip_csv):
-        return None
-    with open(slip_csv, newline="") as f:
-        rows = list(csv.DictReader(f))
-    first = next((i for i, r in enumerate(rows)
-                  if r.get("waypoint") not in ("", None)
-                  and int(float(r["waypoint"])) == inj_wp), None)
-    if first is None:
-        return None
-    window = rows[max(0, first - 10):first + 3]
-
-    def _i(r, k):
-        try:
-            return int(float(r.get(k) or 0))
-        except (TypeError, ValueError):
-            return 0
-    return any(_i(r, "is_holding") or _i(r, "prior_holding_streak")
-               for r in window)
-
-
-def episode_extras(is_clean, responsible, waypoint, out, drift):
-    """(reached, slip_holding) for score(), from the episode's
-    stdout + drift logs -- everything on disk, so --rescore can reuse it."""
-    reached, slip_holding = True, None
-    if not is_clean and waypoint is not None:
-        if responsible in ("orientation", "transition"):
-            # Pose-corruption failures: only a MISS on a waypoint the arm truly
-            # executed to arrival is a real FN; a planner-skipped waypoint is NA.
-            reached = _finished_injection_wp(out, waypoint)
-        else:
-            # Slip/collision injections use the telemetry-based reach test.
-            reached = _drift_max_wp(drift) >= waypoint
-        if responsible == "slip":
-            slip_holding = _slip_holding_at_injection(drift["slip"], waypoint)
-    return reached, slip_holding
-
-
-# --------------------------------------------------------------------------- #
 # One job = one (task, case) episode -> per-detector result rows
 # --------------------------------------------------------------------------- #
-def run_job(task, case, out_dir, na_retries=NA_RETRIES, *, vlm_confirm='', vlm_model=None, vlm_cameras=None, prepost=False, prepost_predicates=''):
-    case_name, failure, waypoint, responsible = case
+def run_job(task, case, out_dir, *, vlm_confirm='', vlm_model=None, vlm_cameras=None, prepost=False, prepost_predicates=''):
+    case_name, failure, waypoint = case
     case_dir = os.path.join(out_dir, task, case_name)
     is_clean = failure == "none"
     label = "clean" if is_clean else f"{failure}@wp{waypoint}"
 
-    # A skipped injection waypoint (NA_unreached) is often stochastic -- the
-    # motion planner sometimes skips the corrupted waypoint's path. Re-run up to
-    # na_retries times to give the failure a chance to actually execute; only
-    # finalize NA if every attempt skips it. A genuine catch (TP, incl.
-    # orientation target-mode) or a real miss on an executed waypoint (FN) stops
-    # retrying immediately -- those are not NA. Each attempt overwrites the case
-    # dir, so the kept run.log/drift/raw-capture belong to the final attempt.
-    attempt = 0
-    while True:
-        attempt += 1
-        out, elapsed, drift = run_episode(task, failure, waypoint, case_dir, vlm_confirm=vlm_confirm, vlm_model=vlm_model, vlm_cameras=vlm_cameras, prepost=prepost, prepost_predicates=prepost_predicates)
-        info = _add_vlm_errors({d: EV.parse_run(out, d) for d in DETECTORS}, out)
-        reached, slip_holding = episode_extras(
-            is_clean, responsible, waypoint, out, drift)
-        if is_clean or attempt >= na_retries:
-            break
-        resp_outcome = score(responsible, info[responsible], is_clean,
-                             responsible, waypoint, reached=reached,
-                             slip_holding=slip_holding)
-        if resp_outcome != "NA_unreached":
-            break
-        message = (f'  RETRY  {task}/{case_name}: injection wp{waypoint} was skipped; '
-                   f'attempt {attempt}/{na_retries}')
-        context = EPISODE_CONSOLE.get()
-        if context:
-            context[0].note(message)
-        else:
-            print(message, flush=True)
+    out, elapsed, drift = run_episode(
+        task, failure, waypoint, case_dir, vlm_confirm=vlm_confirm,
+        vlm_model=vlm_model, vlm_cameras=vlm_cameras, prepost=prepost,
+        prepost_predicates=prepost_predicates)
+    info = _add_vlm_errors({d: EV.parse_run(out, d) for d in DETECTORS}, out)
 
     plots = render_plots(case_dir, task, label, drift, info,
                          failure=failure, waypoint=waypoint)
@@ -2795,25 +2642,17 @@ def run_job(task, case, out_dir, na_retries=NA_RETRIES, *, vlm_confirm='', vlm_m
         rows.append({
             "task": task, "case": case_name, "failure": failure,
             "waypoint": "" if waypoint is None else waypoint,
-            "ground_truth": "clean" if is_clean else "fail",
-            "responsible_detector": responsible, "detector": det,
+            "detector": det,
             "fired": info_det["fired"],
             "fired_waypoints": " ".join(map(str, info_det["fired_waypoints"])),
+            "fired_confirmed": info_det["fired_confirmed"],
+            "fired_waypoints_confirmed": " ".join(map(str, info_det["fired_waypoints_confirmed"])),
             **_vlm_row_fields(info_det),
             **prepost_fields,
-            "outcome": score(det, info_det, is_clean, responsible, waypoint,
-                             reached=reached, slip_holding=slip_holding),
             "status": info_det["status"], "plot": plots.get(det, ""),
             "elapsed": elapsed,
         })
     return rows
-
-
-# --------------------------------------------------------------------------- #
-# Aggregation
-# --------------------------------------------------------------------------- #
-def _r(x):
-    return "nan" if (x is None or (isinstance(x, float) and math.isnan(x))) else round(x, 4)
 
 
 def _vlm_row_fields(info):
@@ -2857,42 +2696,6 @@ def _add_vlm_errors(info, stdout):
     return info
 
 
-def rewrite_summaries(out_dir):
-    results = os.path.join(out_dir, "results.csv")
-    if not os.path.exists(results):
-        return
-    with open(results, newline="") as f:
-        rows = list(csv.DictReader(f))
-    per = {d: {k: 0 for k in ("TP", "TN", "FP", "FN", "CF", "NA")} for d in DETECTORS}
-    mis = []
-    for r in rows:
-        d, o = r["detector"], r["outcome"]
-        if d in per:
-            if o.startswith("NA"):
-                per[d]["NA"] += 1
-            elif o in per[d]:
-                per[d][o] += 1
-        if o in ("FP", "FN"):
-            mis.append(r)
-    with open(os.path.join(out_dir, "summary.csv"), "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["detector", "TP", "TN", "FP", "FN", "cross_fire", "NA",
-                    "precision", "recall", "specificity"])
-        for d in DETECTORS:
-            c = per[d]
-            tp, tn, fp, fn = c["TP"], c["TN"], c["FP"], c["FN"]
-            prec = tp / (tp + fp) if (tp + fp) else float('nan')
-            rec = tp / (tp + fn) if (tp + fn) else float('nan')
-            spec = tn / (tn + fp) if (tn + fp) else float('nan')
-            w.writerow([d, tp, tn, fp, fn, c["CF"], c["NA"],
-                        _r(prec), _r(rec), _r(spec)])
-    with open(os.path.join(out_dir, "misclassified.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
-        w.writeheader()
-        for r in mis:
-            w.writerow({k: r.get(k, "") for k in RESULT_FIELDS})
-
-
 def append_results(out_dir, rows):
     results = os.path.join(out_dir, "results.csv")
     with _write_lock:
@@ -2913,13 +2716,8 @@ def append_results(out_dir, rows):
                 w.writeheader()
             for r in rows:
                 w.writerow({k: r.get(k, "") for k in RESULT_FIELDS})
-        rewrite_summaries(out_dir)
 
 
-# --------------------------------------------------------------------------- #
-# Offline re-scoring: rebuild results.csv from run.log + drift csvs on disk
-# with the CURRENT scoring rules. No simulation.
-# --------------------------------------------------------------------------- #
 def _parse_case_name(case):
     """'clean' -> ('none', None); '<ftype>_wp<N>' -> (ftype, N); else None."""
     if case == "clean":
@@ -2928,70 +2726,6 @@ def _parse_case_name(case):
     if not sep or not tail.isdigit():
         return None
     return head, int(tail)
-
-
-def rescore(out_dir):
-    old_elapsed = {}
-    results = os.path.join(out_dir, "results.csv")
-    if os.path.exists(results):
-        with open(results, newline="") as f:
-            for r in csv.DictReader(f):
-                old_elapsed[(r["task"], r["case"], r["detector"])] = r.get("elapsed", "")
-        os.replace(results, results + ".bak")
-
-    n_cases = 0
-    all_rows = []
-    for task in sorted(os.listdir(out_dir)):
-        tdir = os.path.join(out_dir, task)
-        if not os.path.isdir(tdir):
-            continue
-        for case in sorted(os.listdir(tdir)):
-            cdir = os.path.join(tdir, case)
-            runlog = os.path.join(cdir, "run.log")
-            parsed = _parse_case_name(case)
-            if not os.path.isfile(runlog) or parsed is None:
-                continue
-            failure, waypoint = parsed
-            if failure in EXCLUDED_FAILTYPES:
-                continue
-            is_clean = failure == "none"
-            responsible = "" if is_clean else FAILTYPE_DETECTOR.get(failure, "")
-            with open(runlog, errors="ignore") as f:
-                out = f.read()
-            drift = {d: os.path.join(cdir, f"{d}_drift.csv")
-                     for d in ("orientation", "transition", "slip", "collision")}
-            info = _add_vlm_errors({d: EV.parse_run(out, d) for d in DETECTORS}, out)
-            reached, slip_holding = episode_extras(
-                is_clean, responsible, waypoint, out, drift)
-            prepost_fields = _prepost_fields(out)
-            n_cases += 1
-            for det in DETECTORS:
-                png = os.path.join(cdir, f"{det}.png")
-                info_det = info[det]
-                all_rows.append({
-                    "task": task, "case": case, "failure": failure,
-                    "waypoint": "" if waypoint is None else waypoint,
-                    "ground_truth": "clean" if is_clean else "fail",
-                    "responsible_detector": responsible, "detector": det,
-                    "fired": info_det["fired"],
-                    "fired_waypoints": " ".join(map(str, info_det["fired_waypoints"])),
-                    **_vlm_row_fields(info_det),
-                    **prepost_fields,
-                    "outcome": score(det, info_det, is_clean, responsible, waypoint,
-                                     reached=reached, slip_holding=slip_holding),
-                    "status": info_det["status"],
-                    "plot": png if os.path.exists(png) else "",
-                    "elapsed": old_elapsed.get((task, case, det), ""),
-                })
-
-    with open(results, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
-        w.writeheader()
-        for r in all_rows:
-            w.writerow(r)
-    rewrite_summaries(out_dir)
-    print(f"[rescore] {n_cases} episodes re-scored -> {results} "
-          f"(previous file kept as results.csv.bak)")
 
 
 def replot(out_dir):
@@ -3031,7 +2765,7 @@ def run_batch(argv=None):
     global RUN_TIMEOUT
     ap = argparse.ArgumentParser(
         prog=f"{Path(sys.argv[0]).name} batch",
-        description='Run selected tasks and failure cases, save detector plots, and summarize results.')
+        description='Run selected tasks and failure cases and save logs and detector plots.')
     ap.add_argument("--out", default=str(paths.RUNS_DIR),
                     help="parent folder for per-task run logs, plots, and result CSVs")
     ap.add_argument("--workers", type=int, default=3,
@@ -3042,10 +2776,6 @@ def run_batch(argv=None):
                     help="rerun every case even if it already has results "
                          "(default: resume -- skip (task, case) pairs already "
                          "in results.csv)")
-    ap.add_argument("--rescore", action="store_true",
-                    help="no simulation: rebuild results.csv + summaries from "
-                         "the run.log / drift csvs already on disk, applying "
-                         "the current scoring rules")
     ap.add_argument("--replot", action="store_true",
                     help="no simulation: regenerate every detector plot from "
                          "the drift csvs on disk (needs matplotlib -- run with "
@@ -3055,23 +2785,20 @@ def run_batch(argv=None):
     ap.add_argument("--failures", default="",
                     help="comma-separated failure types to run, e.g. "
                          "slip,collision. Clean baseline episodes are still "
-                         "included for specificity scoring. Default: all.")
+                         "included. Default: all.")
     ap.add_argument("--waypoints", default="",
                     help="comma-separated injection waypoint indices to run, "
                          "e.g. 2 or 2,3. Filters failure cases only; the clean "
                          "baseline episode is still included. Default: all.")
     ap.add_argument("--no-clean", action="store_true",
                     help="skip the clean baseline episode and run only the "
-                         "selected failure cases (no TN/FP specificity rows)")
+                         "selected failure cases")
     ap.add_argument("--start", type=int, default=1,
                     help="1-based index into the task list to start from (default 1)")
     ap.add_argument("--limit", type=int, default=None,
                     help="run at most this many tasks from --start")
     ap.add_argument("--timeout", type=int, default=RUN_TIMEOUT,
                     help=f"per-episode timeout seconds (default {RUN_TIMEOUT})")
-    ap.add_argument("--na-retries", type=int, default=NA_RETRIES,
-                    help="max attempts for a case whose injection waypoint is "
-                         f"skipped before finalizing NA (default {NA_RETRIES})")
     ap.add_argument("--vlm-confirm", default="",
                     help="comma-separated live detectors whose fires should be "
                          "confirmed by the detector VLM, e.g. slip,collision. "
@@ -3099,16 +2826,13 @@ def run_batch(argv=None):
                          "Default: check all conditions.")
 
     args = ap.parse_args(argv)
-    if args.workers < 1 or args.timeout < 1 or args.na_retries < 1:
-        ap.error('--workers, --timeout, and --na-retries must be positive')
+    if args.workers < 1 or args.timeout < 1:
+        ap.error('--workers and --timeout must be positive')
 
     RUN_TIMEOUT = args.timeout
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
 
-    if args.rescore:
-        rescore(out_dir)
-        return
     if args.replot:
         replot(out_dir)
         return
@@ -3202,7 +2926,7 @@ def run_batch(argv=None):
         token = EPISODE_CONSOLE.set((console, key))
         try:
             console.start(key)
-            return run_job(task, case, out_dir, args.na_retries,
+            return run_job(task, case, out_dir,
                            vlm_confirm=vlm_confirm, vlm_model=args.vlm_model,
                            vlm_cameras=args.vlm_cameras, prepost=args.vlm_prepost,
                            prepost_predicates=args.vlm_prepost_predicates)
@@ -3231,13 +2955,10 @@ def run_batch(argv=None):
             console.cancel()
             raise
 
-    rewrite_summaries(out_dir)
     console.note(f'\nRun finished | {console.done}/{len(jobs)} episodes | {duration(time.monotonic() - console.started)} | {failed_jobs} execution errors')
     console.note(f'  Episode logs: {out_dir}/<task>/<case>/run.log')
     if os.path.exists(results_path):
         console.note(f'  Results:      {results_path}')
-        console.note(f'  Summary:      {out_dir}/summary.csv')
-        console.note(f'  Review cases: {out_dir}/misclassified.csv')
 
     if failed_jobs:
         raise SystemExit(f"{failed_jobs} BT episode(s) failed; inspect the case run.log files.")

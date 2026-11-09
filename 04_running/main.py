@@ -9,7 +9,7 @@ from aha_publish.commands import entry, parser, require, run, selected_tasks
 def main():
     from aha_publish.commands import environment
     from aha_publish.calibration.settings import runtime_environment
-    p = parser("Step 4: run calibrated behavior trees and save logs for scoring.", tasks=True)
+    p = parser("Step 4: run calibrated behavior trees and save logs and detector plots.", tasks=True)
     p.add_argument("--failures", default="none", help="none for clean runs; all or comma-separated injected failure types.")
     p.add_argument("--waypoints", default="", help="Comma-separated injection waypoint indices.")
     p.add_argument("--workers", type=int, default=1)

@@ -8,7 +8,7 @@ from aha_publish.commands import entry, parser, run_stage, selected_tasks
 
 
 def main():
-    p = parser('Generate TTM context, evidence, descriptions, BTs, calibration, runs, and scores.', tasks=True)
+    p = parser('Generate TTM context, evidence, descriptions, BTs, calibration, and runs.', tasks=True)
     p.add_argument('--provider', choices=['openai'], default='openai',
                    help='Provider for descriptions and BT generation. OpenAI is supported.')
     p.add_argument('--generation-model', help='Model for descriptions and BT generation.')
@@ -41,8 +41,6 @@ def main():
     if args.verification_model:
         running += ['--model', args.verification_model]
     run_stage('04_running', running, args.dry_run)
-    methods = ['A2'] if args.checks == 'detectors' else ['A1', 'A2', 'A3', 'A4']
-    run_stage('05_scoring', [*selection, '--methods', *methods], args.dry_run)
 
 
 if __name__ == '__main__':

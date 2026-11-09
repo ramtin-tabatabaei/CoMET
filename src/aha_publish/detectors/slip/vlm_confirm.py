@@ -27,7 +27,7 @@ INCLUDE_WAYPOINT_CONTEXT = (
 
 
 def _resolve_confirm_cameras(default):
-    """Allow an evaluation or batch run to shrink the camera set sent to the VLM.
+    """Allow a batch run to shrink the camera set sent to the VLM.
 
     Set AHA_VLM_CONFIRM_CAMERAS to a comma-separated list, for example:
     side_rgb,wrist_rgb,front_rgb

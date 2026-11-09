@@ -175,8 +175,7 @@ def parse_run(stdout, detector):
     # VLM-confirmed fires: a "detection RETRACTED" line overturns the most recent
     # unretracted fire of the same detector (retraction is printed right after the
     # fire+verdict it refers to). Walking fire/retract events in document order
-    # yields the fires that SURVIVED VLM confirmation, so downstream scoring can
-    # judge the end-to-end pipeline (detector + VLM) rather than the raw detector.
+    # yields the fires that survived VLM confirmation for runtime reports and plots.
     events = [(m.start(), "fire", int(m.group(2)))
               for m in FIRE_LINE.finditer(stdout) if m.group(1).lower() == detector]
     events += [(m.start(), "retract", None)
@@ -221,36 +220,3 @@ def responsible_detector_for(failure):
     """Use the same injection-type ownership as batch case enumeration."""
     return next((name for name, failures in DETECTOR_FAILTYPES.items()
                  if failure in failures), None)
-
-
-def parse_vlm_events(stdout):
-    """Checkpoint verdicts and detector confirmations from the standard run log."""
-    checking = re.compile(r"\[vlm\] checking (pre|post)conditions for waypoint (\d+)"
-                          r"(?: and postconditions for waypoint (\d+))?")
-    verdict = re.compile(r"VLM ([A-Z+]+(?: SIMULATOR)?) CHECK: (PASS|FAIL|UNKNOWN)")
-    confirm = re.compile(r"\[vlm:[^\]]+\]\s+(slip|collision)=(YES|NO|UNKNOWN)\b")
-    events, fires = [], {}
-    checkpoint = None
-    for line in (stdout or "").splitlines():
-        match = checking.search(line)
-        if match:
-            kind, waypoint, previous = match.groups()
-            checkpoint = ('prepost' if previous is not None else kind, int(waypoint))
-            continue
-        match = FIRE_LINE.search(line)
-        if match:
-            name, waypoint = match.groups()
-            fires[name.lower()] = int(waypoint)
-        match = verdict.search(line)
-        if match and checkpoint is not None:
-            kind, value = match.groups()
-            if 'SIMULATOR' not in kind or value != 'PASS':
-                events.append({'channel': 'condition', 'event_kind': checkpoint[0],
-                               'waypoint': checkpoint[1], 'verdict': value})
-        match = confirm.search(line)
-        if match:
-            name, value = match.groups()
-            if name in fires:
-                events.append({'channel': 'detector', 'event_kind': name,
-                               'waypoint': fires[name], 'verdict': value})
-    return events

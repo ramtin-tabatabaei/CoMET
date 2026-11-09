@@ -155,21 +155,17 @@ class RunConsole:
             self.note(f'    {"Detector":<14} {"Result":<20} Waypoints')
             for row in rows or []:
                 name = row['detector']
-                outcome = row.get('outcome', '')
                 raw_fire = str(row.get('fired', '')).lower() == 'true'
+                confirmed_fire = str(row.get('fired_confirmed', raw_fire)).lower() == 'true'
                 state = display.detector_states.get(name) or str(row.get('status', ''))
                 if state.upper() in ('DISABLED', 'SKIPPED', 'NOT EVALUATED', 'NO_OUTPUT', 'NOT MONITORED'):
                     result = state.upper().replace('_', ' ')
                 elif row.get('vlm_error'):
                     result = 'VLM ERROR'
-                elif outcome.startswith('NA'):
-                    result = 'NOT EVALUATED'
-                elif outcome in ('TP', 'FP', 'CF'):
+                elif confirmed_fire:
                     result = 'DETECTED'
                 elif raw_fire and str(row.get('vlm_retracted', '')).lower() == 'true':
                     result = 'RETRACTED'
-                elif outcome == 'FN':
-                    result = 'NOT DETECTED'
                 else:
                     result = 'NO FAILURE DETECTED'
                 waypoints = str(row.get('fired_waypoints') or '-').replace(' ', ', ')

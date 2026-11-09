@@ -15,7 +15,7 @@ aha_install_prefix="$aha_install_root/.conda/aha-publish"
 if [[ ! -x "$aha_install_prefix/bin/python" ]]; then
     conda create --prefix "$aha_install_prefix" --copy --yes python=3.10 pip setuptools wheel
 fi
-"$aha_install_prefix/bin/python" -m pip install -r requirements-simulator.txt
+"$aha_install_prefix/bin/python" -m pip install -r requirements.txt
 "$aha_install_prefix/bin/python" -m pip install --no-build-isolation --no-deps \
     -e external/PyRep -e external/RLBench -e external/rlbench-failgen
 "$aha_install_prefix/bin/python" -m pip check
