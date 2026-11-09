@@ -22,8 +22,6 @@ All experiment artifacts are generated under `outputs/` by default.
 ## Requirements
 
 - Ubuntu 22.04 on `x86_64`.
-- Conda, available through [Miniforge](https://github.com/conda-forge/miniforge#install)
-  or an existing Conda installation. The installer creates a Python 3.10 environment.
 - A C/C++ compiler, graphics drivers, and an OpenGL-capable X display.
 - CoppeliaSim 4.1, PyRep, RLBench, and FailGen, installed as described below.
 - An OpenAI API key for description generation, behavior-tree generation, and
@@ -167,14 +165,14 @@ optional (see [Condition-rule catalogue](#condition-rule-catalogue)).
 ```bash
 python 01_ttm_context/main.py --task basketball_in_hoop
 python 02_descriptions/main.py --task basketball_in_hoop
-python 03_behavior_trees/main.py --task basketball_in_hoop --generate-only
+python 03_behavior_trees/main.py --task basketball_in_hoop
 python calibration/main.py all --task basketball_in_hoop --episodes 10
 python 04_running/main.py --task basketball_in_hoop --failures all
 ```
 
 Steps 1–4 accept repeated `--task` arguments or `--all`. Calibration accepts
 repeated `--task` arguments. Without a task selection, calibration `collect` and
-`all` discover configured task YAMLs; `compute` discovers recorded clean data.
+`all` discover configured task YAMLs.
 Use `--workers` on calibration and execution to control simulator concurrency.
 
 To open an existing BT in the web interface without regenerating it:
@@ -185,33 +183,10 @@ python 03_behavior_trees/main.py --task basketball_in_hoop --no-auto-generate
 
 This requires a saved BT in `outputs/behavior_trees/` and accepts one task.
 
-Stage 4 shows live waypoint progress, pre/postcondition verdicts, and a compact
-detector-results table for each episode. Detailed simulator output and condition
+Detailed simulator output and condition
 evidence are retained in `outputs/runs/<task>/<case>/run.log` for inspection.
 Completed cases are reused unless `--redo` is supplied.
-Detector plots are saved as PNG and SVG, with shared waypoint labels, separate
-collision panels for each joint, and legends outside the data area.
-
-Stage 2 captures waypoint images and gripper sequences before generating the
-description. `--reuse-evidence` reuses previously captured evidence in the
-configured output directory:
-
-```bash
-python 02_descriptions/main.py --task basketball_in_hoop --reuse-evidence --model YOUR_MODEL
-```
-
-Omit `--generate-only` from stage 3 to open BT Condition Studio for interactive
-review. Keep its server running while reviewing and stop it with Ctrl+C before
-continuing in the same terminal. Multiple-task runs and the full pipeline use
-`--generate-only` automatically.
-
-Stage 4 resumes completed cases. Use `--redo` after changing behavior trees,
-detector settings, or calibration. `--failures none` selects clean execution;
-`--waypoints` restricts injection waypoints while retaining the clean baseline.
-
-```bash
-python 04_running/main.py --task basketball_in_hoop --failures collision --waypoints 1,2 --redo
-```
+Detector plots are saved as PNG and SVG.
 
 For detector-only execution:
 
