@@ -2,12 +2,12 @@
 """Collect clean telemetry once; recompute and apply thresholds from one config."""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from aha_publish import paths
-from aha_publish.commands import entry, environment, parser, require, run
-from aha_publish.calibration.settings import DEFAULT_SETTINGS, compute_arguments, detector_environment, load_settings
-from aha_publish.calibration.parallel import default_workers
-from aha_publish.simulation.tasks import validate_task
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src import paths
+from src.commands import entry, environment, parser, require, run
+from src.calibration.settings import DEFAULT_SETTINGS, compute_arguments, detector_environment, load_settings
+from src.calibration.parallel import default_workers
+from src.simulation.tasks import validate_task
 
 
 def main():
@@ -54,10 +54,10 @@ def main():
                 (paths.CALIBRATION_DIR / 'manifests' / f'{task}.json').unlink(missing_ok=True)
         run('calibration.calibrate_all_clean', options, args.dry_run, env, announce=False)
     if not args.dry_run:
-        from aha_publish.calibration.artifacts import validate_raw
+        from src.calibration.artifacts import validate_raw
         for task in tasks:
             validate_raw(raw, task, args.episodes if args.action in ('all', 'collect') else 1)
-            from aha_publish.calibration.residuals import expected_parameters, load_envelopes
+            from src.calibration.residuals import expected_parameters, load_envelopes
             load_envelopes(raw, task, expected_parameters(config['collision']))
     if args.action in ('compute', 'all'):
         options = ['--out-root', paths.CALIBRATION_DIR, '--raw-dir', raw,
@@ -71,10 +71,10 @@ def main():
                 (paths.CALIBRATION_DIR / 'manifests' / f'{task}.json').unlink(missing_ok=True)
         run('calibration.compute_thresholds', options, args.dry_run, env, announce=False)
         if not args.dry_run:
-            from aha_publish.calibration.artifacts import finalize
+            from src.calibration.artifacts import finalize
             for task in tasks:
                 finalize(task, raw, config)
-            from aha_publish.calibration.compute_thresholds import print_threshold_summary
+            from src.calibration.compute_thresholds import print_threshold_summary
             print_threshold_summary(paths.CALIBRATION_DIR, tasks)
             print(f'\nCalibration complete | {len(tasks)} task(s)\n  Baselines and runtime settings: {paths.CALIBRATION_DIR}\n', flush=True)
 

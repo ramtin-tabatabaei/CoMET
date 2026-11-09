@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 
 def require_local(path):
@@ -18,13 +19,13 @@ def require_local(path):
 
 def main():
     print(f"Python: {require_local(sys.executable)}")
-    for name in ("aha_publish", "numpy", "PIL", "yaml", "py_trees", "matplotlib",
+    for name in ("src", "numpy", "PIL", "yaml", "py_trees", "matplotlib",
                  "openai", "pydantic", "pyrep", "pyrep.backend._sim_cffi", "rlbench", "failgen",
                  "failgen.env_wrapper"):
         module = importlib.import_module(name)
         print(f"{name}: {require_local(module.__file__)}")
 
-    from aha_publish import paths
+    from src import paths
     for path in (paths.FAILGEN_ROOT / "failgen/configs/basketball_in_hoop.yaml",
                  paths.RLBENCH_ROOT / "rlbench/task_ttms/basketball_in_hoop.ttm",
                  paths.RLBENCH_ROOT / "rlbench/task_design.ttt",

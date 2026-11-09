@@ -2,13 +2,13 @@
 """Public workflow entry point. Run with --help for usage."""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from aha_publish import paths
-from aha_publish.commands import entry, parser, require, run, selected_tasks
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src import paths
+from src.commands import entry, parser, require, run, selected_tasks
 
 def main():
-    from aha_publish.commands import environment
-    from aha_publish.calibration.settings import runtime_environment
+    from src.commands import environment
+    from src.calibration.settings import runtime_environment
     p = parser("Step 4: run calibrated behavior trees and save logs and detector plots.", tasks=True)
     p.add_argument("--failures", default="none", help="none for clean runs; all or comma-separated injected failure types.")
     p.add_argument("--waypoints", default="", help="Comma-separated injection waypoint indices.")

@@ -3,8 +3,8 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
-from aha_publish.commands import entry, parser, run_stage, selected_tasks
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from src.commands import entry, parser, run_stage, selected_tasks
 
 
 def main():

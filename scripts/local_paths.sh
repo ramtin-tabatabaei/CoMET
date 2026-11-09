@@ -6,7 +6,7 @@ export RLBENCH_ROOT="$aha_project_root/external/RLBench"
 export AHA_FAILGEN_ROOT="$aha_project_root/external/rlbench-failgen"
 export AHA_OUTPUT_ROOT="$aha_project_root/outputs"
 export AHA_CALIBRATION_ROOT="$AHA_OUTPUT_ROOT/calibration"
-export PYTHONPATH="$aha_project_root/src:$AHA_FAILGEN_ROOT:$RLBENCH_ROOT"
+export PYTHONPATH="$aha_project_root:$AHA_FAILGEN_ROOT:$RLBENCH_ROOT"
 export PYTHONNOUSERSITE=1
 unset PYTHONHOME
 export LD_LIBRARY_PATH="$COPPELIASIM_ROOT"

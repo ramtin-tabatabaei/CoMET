@@ -2,9 +2,9 @@
 """Public workflow entry point. Run with --help for usage."""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from aha_publish import paths
-from aha_publish.commands import entry, parser, require, run, selected_tasks
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src import paths
+from src.commands import entry, parser, require, run, selected_tasks
 
 def main():
     p = parser("Step 1: inspect existing RLBench TTM models and write context JSON.", tasks=True)

@@ -242,6 +242,32 @@ Scene inspection provides a simulator startup check without API calls. Further
 graphics configuration is described in the
 [PyRep headless documentation](https://github.com/stepjam/PyRep#running-headless).
 
+### Task demonstration videos
+
+Render pushing and square-peg insertion examples without API calls:
+
+```bash
+source scripts/activate_local.sh
+for task_case in push_clean push_miss push_offset push_sequence \
+                 insert_clean insert_offset insert_rotation insert_slip; do
+  python scripts/render_task_videos.py --case "$task_case"
+done
+```
+
+Each case writes three 1920 × 1080 H.264 videos to `outputs/task_videos_1080p/`:
+`<case>_front.mp4`, `<case>_side.mp4` and `<case>_wrist.mp4`. The front and side
+cameras frame the whole arm and the task objects; the wrist camera moves with
+the gripper. Playback follows simulation time (20 fps at the default timestep),
+and each task uses a fixed scene seed for its baseline and failure cases. Each
+clip shows waypoint labels, injection markers, and a final RLBench success
+verdict. These demonstrations use the task's success conditions; they do not run
+CoMET detectors or visual verification.
+
+Use `--views front side` to record a subset, `--width`/`--height` for another
+resolution, `--preview` to save the first frame of each view as PNG, or
+`--probe` to run a scene without recording. For a machine without a display,
+prefix the render command with `xvfb-run -a -s "-screen 0 1920x1080x24"`.
+
 ## Configuration
 
 ### Output paths
@@ -257,24 +283,24 @@ export AHA_CALIBRATION_ROOT="$AHA_OUTPUT_ROOT/calibration"
 
 `AHA_CALIBRATION_ROOT` can also point to separate calibration storage. Activation
 resets both paths to the checkout defaults. Shared path definitions are in
-`src/aha_publish/paths.py`.
+`src/paths.py`.
 
 ### Condition-rule catalogue
 
 The shared catalogue is stored in
-`src/aha_publish/behavior_trees/generated_condition_rules.json`. To customize it:
+`src/behavior_trees/generated_condition_rules.json`. To customize it:
 
 1. Edit `config/condition_taxonomy_input.json` to define categories, predicates,
    occurrence, and stage rules.
 2. If needed, edit `PRIMITIVE_DEFINITIONS`, `ACTION_SEQUENCE`, and `SYSTEM_PROMPT`
-   in `src/aha_publish/behavior_trees/condition_rule_generator.py`.
+   in `src/behavior_trees/condition_rule_generator.py`.
 3. Validate the input, generate the catalogue, and rebuild the affected trees:
 
 ```bash
-python src/aha_publish/behavior_trees/condition_rule_generator.py \
+python src/behavior_trees/condition_rule_generator.py \
   --input config/condition_taxonomy_input.json --validate-only
 
-python src/aha_publish/behavior_trees/condition_rule_generator.py \
+python src/behavior_trees/condition_rule_generator.py \
   --input config/condition_taxonomy_input.json
 
 python 03_behavior_trees/main.py --task basketball_in_hoop --generate-only
@@ -417,7 +443,7 @@ CoMET/
 ├── config/               # conditions, detector settings, and calibration
 ├── patches/              # pinned backend adaptations
 ├── scripts/              # environment setup and dependency checks
-├── src/aha_publish/      # implementation modules
+├── src/                  # implementation modules
 └── run_pipeline.py
 ```
 
