@@ -240,11 +240,9 @@ The shared catalogue is stored in
    occurrence, and stage rules.
 2. If needed, edit `PRIMITIVE_DEFINITIONS`, `ACTION_SEQUENCE`, and `SYSTEM_PROMPT`
    in `src/behavior_trees/condition_rule_generator.py`.
-3. Validate the input, generate the catalogue, and rebuild the affected trees:
+3. Generate the catalogue, and rebuild the affected trees:
 
 ```bash
-python src/behavior_trees/condition_rule_generator.py \
-  --input config/condition_taxonomy_input.json --validate-only
 
 python src/behavior_trees/condition_rule_generator.py \
   --input config/condition_taxonomy_input.json
@@ -252,14 +250,11 @@ python src/behavior_trees/condition_rule_generator.py \
 python 03_behavior_trees/main.py --task basketball_in_hoop --generate-only
 ```
 
-Validation does not call the API; catalogue generation requires `OPENAI_API_KEY`.
+Catalogue generation requires `OPENAI_API_KEY`.
 Generation replaces the catalogue JSON. The full pipeline reads this catalogue
 but does not regenerate it automatically.
 
-The BT generator receives the complete task description. Existing failure links
-retain their supplied names. Conditions without a failure link are matched to
-catalogue predicates; unmatched conditions remain unlinked.
-
+### BT Condition Studio
 In BT Condition Studio, edit conditions directly or enter a request under
 **What is missing in this stage?** and click **Update stage** to have the model
 edit, add, or remove conditions for that stage. Other stages and unsaved edits
